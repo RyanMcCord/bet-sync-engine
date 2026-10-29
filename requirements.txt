@@ -1,0 +1,5 @@
+fastapi>=0.110,<1
+uvicorn>=0.29
+requests>=2.31
+# for the API tests (FastAPI's TestClient)
+httpx>=0.27
