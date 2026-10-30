@@ -17,15 +17,19 @@ LEG_TYPE = {"moneyline": "ml", "spread": "spread", "total": "total"}
 
 
 def _epoch(dt):
+    """A datetime as epoch seconds, keeping None as None."""
     return int(dt.timestamp()) if dt else None
 
 
 def _decimal(odds):
+    """Convert American odds to decimal, rounded to 4 places as Cascade sends them."""
     return round(1 + (odds / 100 if odds > 0 else 100 / -odds), 4)
 
 
 def render(bet, version, team_names):
+    """Render one version of a simulated bet as a Cascade ticket."""
     def side(leg):
+        """Cascade's side for a leg: over/under for totals, otherwise home or away."""
         if leg.market == "total":
             return leg.selection            # over / under
         return "home" if leg.selection == leg.game.home else "away"
@@ -54,6 +58,7 @@ class Cascade:
     OPTIONAL = ("decimal_odds", "return")
 
     def __init__(self, world, faults: Faults):
+        """world holds the true bets; faults decides how this book misbehaves."""
         from ..domain import TEAMS
         self.world, self.faults, self.team_names = world, faults, TEAMS
 
@@ -71,6 +76,9 @@ class Cascade:
         return Response(404, {"error": "no such ticket"}, {})
 
     def changes(self, params: dict) -> Response:
+        """GET /api/tickets/changes: changes after since_seq, in order. Subject to faults, which
+        include redelivering changes the client has already had and leaving out optional fields.
+        """
         failure = self.faults.before()
         if failure:
             return failure

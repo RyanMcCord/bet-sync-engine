@@ -16,6 +16,7 @@ NS_BET = {
     "lastModified": "2026-11-02T02:10:00Z",
 }
 def epoch(text):
+    """An ISO 8601 timestamp as epoch seconds."""
     return int(datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp())
 
 
@@ -30,6 +31,7 @@ CS_TICKET = {
 
 class MappingTests(unittest.TestCase):
     def test_same_bet_same_canonical_shape(self):
+        """The same bet from either book becomes the same canonical bet on the same game."""
         ns = NorthstarProvider(None).to_observation(NS_BET)
         cs = CascadeProvider(None).to_observation(CS_TICKET)
         for o in (ns, cs):
@@ -42,6 +44,7 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(ns.event_aliases, (("ns-evt-901", ns.bet.legs[0].event_id),))
 
     def test_absent_field_is_missing_but_null_is_a_value(self):
+        """A field left out is reported missing; a field sent as null is kept as null."""
         ticket = dict(CS_TICKET)
         del ticket["decimal_odds"]
         ticket["return"] = None
@@ -50,6 +53,7 @@ class MappingTests(unittest.TestCase):
         self.assertIsNone(o.bet.payout_cents)
 
     def test_totals_and_away_sides(self):
+        """Cascade's totals keep over/under, and an away side becomes the away team's code."""
         ticket = dict(CS_TICKET, legs=[
             {"game": CS_TICKET["legs"][0]["game"], "type": "total", "side": "over", "points": 221.5},
             {"game": CS_TICKET["legs"][0]["game"], "type": "spread", "side": "away", "points": 4.5}])
@@ -58,6 +62,7 @@ class MappingTests(unittest.TestCase):
                          [(Market.TOTAL, "over", 221.5), (Market.SPREAD, "PHX", 4.5)])
 
     def test_bad_record_raises_record_error(self):
+        """A record that can't be translated raises RecordError, from either adapter."""
         for provider, raw in ((NorthstarProvider(None), dict(NS_BET, status="WEIRD")),
                               (CascadeProvider(None), {"ticket": 1})):
             with self.assertRaises(RecordError):
@@ -66,6 +71,7 @@ class MappingTests(unittest.TestCase):
 
 class CursorTests(unittest.TestCase):
     def test_northstar_follows_pages_then_rereads_an_overlap(self):
+        """Northstar follows page tokens, then starts the next sweep just before the newest change seen."""
         calls, pages = [], [
             {"data": [dict(NS_BET, lastModified="2026-11-02T02:00:00Z")], "next_page_token": "50"},
             {"data": [dict(NS_BET, lastModified="2026-11-02T02:10:00Z")], "next_page_token": None},
@@ -80,16 +86,19 @@ class CursorTests(unittest.TestCase):
         self.assertEqual(last.next_cursor, "2026-11-02T02:08:00Z||")
 
     def test_northstar_cursor_never_moves_backwards(self):
+        """An empty page leaves Northstar's cursor where it was."""
         p = NorthstarProvider(lambda path, params: {"data": [], "next_page_token": None})
         self.assertEqual(p.fetch("2026-11-02T03:00:00Z||").next_cursor, "2026-11-02T03:00:00Z||")
 
     def test_cascade_cursor_is_the_last_sequence(self):
+        """Cascade's cursor becomes the last sequence number returned."""
         p = CascadeProvider(lambda path, params: {"changes": [{"seq": 41, "ticket": CS_TICKET}], "last_seq": 41,
                                                   "more": True})
         page = p.fetch("40")
         self.assertEqual((page.next_cursor, page.has_more, len(page.records)), ("41", True, 1))
 
     def test_unexpected_response_shape_is_permanent(self):
+        """A response in the wrong shape is a permanent error, not something to retry."""
         with self.assertRaises(PermanentError):
             NorthstarProvider(lambda path, params: {"oops": True}).fetch(None)
         with self.assertRaises(PermanentError):

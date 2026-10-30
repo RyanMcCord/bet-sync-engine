@@ -21,14 +21,17 @@ PAGE_SIZE = 50
 
 
 def _ts(value):
+    """Parse a Northstar ISO 8601 timestamp into a UTC datetime."""
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
 def _iso(dt):
+    """Format a datetime the way Northstar expects it in a query: ISO 8601 in UTC with a Z."""
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _cents(amount):
+    """Turn a dollar string like '25.00' into integer cents, keeping None as None."""
     return None if amount is None else round(float(amount) * 100)
 
 
@@ -36,9 +39,13 @@ class NorthstarProvider(Provider):
     name = "northstar"
 
     def __init__(self, get_json):
+        """get_json is (path, params) -> dict, raising the errors in base.py."""
         self.get_json = get_json   # (path, params) -> dict, raising the errors in base.py
 
     def fetch(self, cursor):
+        """Get the next page of bets. The cursor is 'since|page_token|newest_seen': follow page tokens
+        within a sweep, then start the next sweep at the newest lastModified seen, minus the overlap.
+        """
         since, token, high = (cursor or f"{EPOCH}||").split("|")
         body = self.get_json("/v1/bets", {"updated_since": since, "page_token": token or None, "limit": PAGE_SIZE})
         if not isinstance(body.get("data"), list):
@@ -58,9 +65,14 @@ class NorthstarProvider(Provider):
         return Page(records, f"{max(resume, since, key=_ts)}||", has_more=False)
 
     def record_id(self, raw):
+        """The betId of a raw record, or '?' if it has none."""
         return str(raw.get("betId", "?")) if isinstance(raw, dict) else "?"
 
     def to_observation(self, raw):
+        """Translate one Northstar bet into the canonical model: dollar strings to cents, '+150' to an
+        int, status names to statuses, team codes to canonical codes. Northstar's own event IDs are
+        kept as aliases. Raises RecordError if the record can't be read.
+        """
         try:
             events, aliases, legs = [], [], []
             for s in raw["selections"]:

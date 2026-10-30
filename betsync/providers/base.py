@@ -27,6 +27,7 @@ class TransientError(ProviderError):
 
 class RateLimited(ProviderError):
     def __init__(self, message, retry_after: float):
+        """retry_after is how many seconds the provider asked us to wait."""
         super().__init__(message)
         self.retry_after = retry_after
 

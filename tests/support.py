@@ -19,6 +19,7 @@ def in_process(routes, timeout=CLIENT_TIMEOUT):
     a response slower than the timeout is a timeout, 429 is rate limited, 5xx transient, 4xx permanent.
     routes: (path) -> handler(params) or None."""
     def get_json(path, params):
+        """Call the routed handler and turn its response into JSON or a typed error."""
         handler = routes(path)
         if handler is None:
             raise PermanentError(f"no route for {path}")
@@ -36,6 +37,7 @@ def in_process(routes, timeout=CLIENT_TIMEOUT):
 
 
 def temp_store():
+    """A Store on a fresh temporary file. Returns the store and the file's path."""
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     return Store(path), path
@@ -45,6 +47,9 @@ class Rig:
     """A simulator, a store and a worker per book, all in-process with a manual clock. Waits are skipped."""
 
     def __init__(self, scenario="calm", seed=7, policy=None):
+        """Build a simulator on a manual clock, a temporary store, both adapters wired straight to the
+        simulated books, and a worker for each that never actually sleeps.
+        """
         self.clock = ManualClock(START)
         self.sim = Simulator(self.clock, scenario=scenario, seed=seed)
         # no real rate-limit windows in-process: requests come too fast; test 429 handling directly instead
@@ -54,9 +59,11 @@ class Rig:
         sim = self.sim
 
         def northstar_routes(path):
+            """Route Northstar's one endpoint."""
             return sim.northstar.list_bets if path == "/v1/bets" else None
 
         def cascade_routes(path):
+            """Route Cascade's change feed and single-ticket lookup."""
             if path == "/api/tickets/changes":
                 return sim.cascade.changes
             tail = path.rsplit("/", 1)[-1]
@@ -73,9 +80,11 @@ class Rig:
             w.stop.wait = lambda seconds: False   # don't actually sleep between retries
 
     def sync(self, name=None):
+        """Run one cycle for one book, or for both. Returns each book's RunResult."""
         return {n: w.run_cycle() for n, w in self.workers.items() if name in (None, n)}
 
     def close(self):
+        """Delete the temporary database files."""
         try:
             os.remove(self.path)
             for suffix in ("-wal", "-shm"):

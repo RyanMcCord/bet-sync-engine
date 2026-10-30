@@ -21,12 +21,14 @@ from .support import temp_store
 
 
 def free_port():
+    """A local port nothing is listening on."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
 def wait_for(check, timeout=15.0, every=0.1):
+    """Poll check until it returns True or the timeout passes. Returns whether it succeeded."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if check():
@@ -38,6 +40,7 @@ def wait_for(check, timeout=15.0, every=0.1):
 class HttpEndToEndTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        """Serve the simulated books on a real local HTTP server, with time running 600x faster."""
         cls.sim = Simulator(ScaledClock(datetime.now(timezone.utc), speed=600), scenario="calm", seed=7)
         port = free_port()
         cls.base = f"http://127.0.0.1:{port}"
@@ -49,20 +52,24 @@ class HttpEndToEndTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        """Stop the server."""
         cls.server.should_exit = True
         cls.thread.join(5)
 
     def setUp(self):
+        """Clear any faults from earlier tests and give each test a fresh store."""
         for book in self.sim.books.values():
             book.faults.update(outage=False, error_rate=0, timeout_rate=0, rate_limit_per_sec=0)
         self.store, path = temp_store()
         self.addCleanup(lambda: [os.remove(path + s) for s in ("", "-wal", "-shm") if os.path.exists(path + s)])
 
     def control(self, book, **changes):
+        """Change a book's fault settings through its _control endpoint."""
         r = requests.post(f"{self.base}/{book}/_control", json=changes, timeout=5)
         self.assertEqual(r.status_code, 200, r.text)
 
     def test_client_turns_http_trouble_into_typed_errors(self):
+        """Real timeouts, 429s and refused connections become the right typed errors."""
         client = providers.HttpClient(f"{self.base}/cascade", timeout=0.5)
         self.control("cascade", timeout_rate=1.0)
         started = time.monotonic()
@@ -78,6 +85,9 @@ class HttpEndToEndTests(unittest.TestCase):
             providers.HttpClient("http://127.0.0.1:1", timeout=0.5).get_json("/", {})   # nothing listening
 
     def test_sync_engine_end_to_end_with_an_outage(self):
+        """With real threads and HTTP, both books sync; an outage takes Cascade from degraded to stale
+        while Northstar stays ok; and Cascade recovers on its own when the outage ends.
+        """
         adapters = providers.build(self.base, timeout=0.5)
         engine = SyncEngine(adapters, self.store, SyncPolicy(poll_interval=0.2, backoff_base=0.05, backoff_cap=0.2,
                                                              failure_backoff_cap=0.5))

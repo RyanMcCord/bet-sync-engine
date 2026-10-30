@@ -22,12 +22,15 @@ class ManualClock:
     """For tests: time only moves when told to."""
 
     def __init__(self, start: datetime):
+        """Start the clock at a fixed time."""
         self._now = start
 
     def now(self) -> datetime:
+        """The current simulated time."""
         return self._now
 
     def advance(self, **kw):
+        """Move time forward, e.g. advance(minutes=30)."""
         self._now += timedelta(**kw)
 
 
@@ -35,9 +38,11 @@ class ScaledClock:
     """For the running service: simulated time runs `speed` times faster than real time."""
 
     def __init__(self, start: datetime, speed: float):
+        """Start simulated time at start, running speed times faster than the wall clock."""
         self.start, self.speed, self._wall = start, speed, time.monotonic()
 
     def now(self) -> datetime:
+        """The current simulated time."""
         return self.start + timedelta(seconds=(time.monotonic() - self._wall) * self.speed)
 
 
@@ -98,11 +103,13 @@ class BetTruth:
     versions: list[BetVersion] = field(default_factory=list)
 
     def version_at(self, now: datetime) -> BetVersion | None:
+        """The latest version of this bet at the given time, or None if it hadn't been placed yet."""
         visible = [v for v in self.versions if v.at <= now]
         return visible[-1] if visible else None
 
 
 def _american_to_decimal(odds: int) -> float:
+    """Convert American odds to decimal, unrounded."""
     return 1 + (odds / 100 if odds > 0 else 100 / -odds)
 
 
@@ -110,6 +117,7 @@ class World:
     BOOKS = ("northstar", "cascade")
 
     def __init__(self, clock, seed: int = 7, games: int = 12, bets_per_book: int = 24):
+        """Generate the games and each book's bets from the seed."""
         self.clock = clock
         self.rng = random.Random(seed)
         start = clock.now()
@@ -118,6 +126,7 @@ class World:
         self._lock = threading.Lock()
 
     def _make_game(self, gid, start):
+        """Make one game: a league, two teams, a start time around now and a final score."""
         rng = self.rng
         league = rng.choice(["NBA", "NBA", "NFL"])
         away, home = rng.sample(sorted(TEAMS[league]), 2)
@@ -134,6 +143,7 @@ class World:
                     postponed=rng.random() < 0.04)
 
     def _make_leg(self, game):
+        """Make one leg on a game: a moneyline, spread or total pick."""
         rng = self.rng
         market = rng.choice(["moneyline", "spread", "total"])
         if market == "moneyline":
@@ -145,6 +155,9 @@ class World:
         return LegTruth(game, market, rng.choice(["over", "under"]), float(total))
 
     def _make_bet(self, book, n, start):
+        """Make one bet for a book: one to three legs, a stake and price, and the versions it goes
+        through as its games finish (open, then settled).
+        """
         rng = self.rng
         games = rng.sample(self.games, 1 if rng.random() < 0.75 else rng.choice([2, 3]))
         legs = []
@@ -197,6 +210,7 @@ class World:
     # --- what the books can see right now ---------------------------------------------
 
     def now(self):
+        """The current simulated time."""
         return self.clock.now()
 
     def current_bets(self, book):

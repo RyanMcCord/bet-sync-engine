@@ -27,6 +27,7 @@ class BetStatus(str, Enum):
 
     @property
     def settled(self) -> bool:
+        """True for every status except open."""
         return self is not BetStatus.OPEN
 
 
@@ -84,10 +85,14 @@ class Event:
 
     @property
     def name(self) -> str:
+        """The game as people write it, e.g. 'PHX @ LAL'."""
         return f"{self.away} @ {self.home}"
 
     @classmethod
     def from_teams(cls, league, away_name, home_name, starts_at):
+        """Build an event from a book's team names or codes. Both books' descriptions of one game
+        resolve to the same ID; teams_known is False if either team wasn't recognised.
+        """
         away, away_known = team_code(league, away_name)
         home, home_known = team_code(league, home_name)
         return cls(event_id(league, away, home, starts_at), league, away, home, starts_at, away_known and home_known)
@@ -118,10 +123,12 @@ class Bet:
 
     @property
     def id(self) -> str:
+        """The canonical bet ID, 'sportsbook:external_id'."""
         return bet_id(self.sportsbook, self.external_id)
 
     @property
     def kind(self) -> str:
+        """'parlay' if the bet has more than one leg, otherwise 'single'."""
         return "parlay" if len(self.legs) > 1 else "single"
 
     def unknown_fields(self) -> tuple[str, ...]:
@@ -137,6 +144,7 @@ class Bet:
 
 
 def bet_id(sportsbook: str, external_id: str) -> str:
+    """Namespace a provider's bet ID by sportsbook, so IDs from different books never collide."""
     return f"{sportsbook}:{external_id}"
 
 
@@ -209,6 +217,7 @@ def decide(current: Current | None, incoming: Observation) -> Decision:
 # --- odds helpers (books quote odds differently) --------------------------------------
 
 def decimal_to_american(decimal_odds: float) -> int:
+    """Convert decimal odds (2.5) to American odds (+150). Raises ValueError for odds of 1 or less."""
     if decimal_odds <= 1:
         raise ValueError(f"decimal odds must be above 1, got {decimal_odds}")
     if decimal_odds >= 2:
@@ -217,6 +226,9 @@ def decimal_to_american(decimal_odds: float) -> int:
 
 
 def parse_american(value: str | int) -> int:
+    """Parse American odds given as text or a number ('+150', '-110', 'EVEN'). Raises ValueError
+    for values between -100 and +100, which aren't valid American odds.
+    """
     text = str(value).strip().upper()
     if text in ("EVEN", "EV"):
         return 100

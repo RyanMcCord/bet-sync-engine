@@ -6,11 +6,15 @@ from .base import PermanentError, RateLimited, TransientError
 
 class HttpClient:
     def __init__(self, base_url: str, timeout: float = 3.0, session=None):
+        """base_url is the provider's root URL; timeout applies to every request, in seconds."""
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = session or requests.Session()
 
     def get_json(self, path: str, params: dict) -> dict:
+        """GET a path and return its JSON body. Timeouts, connection failures and 5xx raise
+        TransientError, 429 raises RateLimited, and other 4xx or a non-JSON body raise PermanentError.
+        """
         url = f"{self.base_url}{path}"
         try:
             r = self.session.get(url, params={k: v for k, v in params.items() if v is not None}, timeout=self.timeout)
@@ -31,6 +35,7 @@ class HttpClient:
 
 
 def _retry_after(value) -> float:
+    """Read a Retry-After header as seconds, defaulting to 1 if it's missing or unreadable."""
     try:
         return max(0.0, float(value))
     except (TypeError, ValueError):

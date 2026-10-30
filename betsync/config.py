@@ -19,6 +19,9 @@ class Config:
 
 
 def load(argv=None) -> Config:
+    """Read settings from command-line flags, falling back to BETSYNC_* environment variables,
+    then to the defaults in Config.
+    """
     env = os.environ.get
     d = Config()
     p = argparse.ArgumentParser(prog="python -m betsync", description="Bet sync engine with two simulated sportsbooks.")

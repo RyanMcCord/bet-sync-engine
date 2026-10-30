@@ -18,21 +18,29 @@ from .faults import FaultProfile
 
 
 def create_app(sim) -> Starlette:
+    """Serve a simulator's books over HTTP, with a _control endpoint per book to change its faults."""
     async def send(resp):
+        """Wait out any simulated latency, then send the response."""
         if resp.delay:
             await asyncio.sleep(resp.delay)
         return JSONResponse(resp.body, status_code=resp.status, headers=resp.headers)
 
     async def northstar_bets(request: Request):
+        """GET /northstar/v1/bets"""
         return await send(sim.northstar.list_bets(dict(request.query_params)))
 
     async def cascade_changes(request: Request):
+        """GET /cascade/api/tickets/changes"""
         return await send(sim.cascade.changes(dict(request.query_params)))
 
     async def cascade_ticket(request: Request):
+        """GET /cascade/api/tickets/{ticket}"""
         return await send(sim.cascade.ticket(int(request.path_params["ticket"])))
 
     async def control(request: Request):
+        """GET or POST /{book}/_control: show a book's fault settings, or change them. Unknown
+        settings are rejected with a 400 that lists the allowed ones.
+        """
         book = sim.books.get(request.path_params["book"])
         if not book:
             return JSONResponse({"error": "unknown sportsbook"}, status_code=404)

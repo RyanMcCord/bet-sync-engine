@@ -14,6 +14,7 @@ from .sync import SyncEngine, SyncPolicy
 
 
 def main(argv=None):
+    """Start everything in one process: the simulated books, a sync worker per book, and the API."""
     cfg = config.load(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
                         datefmt="%H:%M:%S")

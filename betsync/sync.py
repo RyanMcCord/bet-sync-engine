@@ -54,12 +54,16 @@ class RunResult:
 
 
 def utcnow():
+    """The current time in UTC (the default clock; tests pass their own)."""
     return datetime.now(timezone.utc)
 
 
 class SyncWorker:
     def __init__(self, provider: Provider, store, policy: SyncPolicy | None = None, *,
                  now=utcnow, rng: random.Random | None = None, stop: threading.Event | None = None):
+        """Set up a worker for one provider. now, rng and stop can be replaced in tests to control
+        time, jitter and sleeping.
+        """
         self.provider, self.store = provider, store
         self.policy = policy or SyncPolicy()
         self.now = now
@@ -71,6 +75,10 @@ class SyncWorker:
     # --- one cycle --------------------------------------------------------------------
 
     def run_cycle(self) -> RunResult:
+        """Run one sync cycle: fetch pages from the saved cursor, translate each record, and apply
+        each page together with its new cursor. If that succeeded, re-fetch incomplete bets. Then
+        record the run and the book's health. A failure keeps the pages already applied.
+        """
         name = self.provider.name
         run = RunResult(started_at=self.now())
         cursor = self.store.state(name).cursor
@@ -129,6 +137,10 @@ class SyncWorker:
                 run.repaired += 1
 
     def _fetch(self, cursor, run):
+        """Fetch one page, retrying transient errors with exponential backoff and full jitter, and
+        waiting out rate limits. Permanent errors are raised at once; the last error is raised if
+        every attempt fails.
+        """
         p = self.policy
         for attempt in range(1, p.attempts + 1):
             try:
@@ -158,6 +170,9 @@ class SyncWorker:
     # --- running forever --------------------------------------------------------------
 
     def run_forever(self):
+        """Run cycles until stopped, sleeping until the next attempt is due or until woken by
+        POST /sync. An unexpected error is logged and doesn't stop the worker.
+        """
         log.info("%s: worker started", self.provider.name)
         while not self.stop.is_set():
             try:
@@ -176,11 +191,13 @@ class SyncEngine:
     """Starts and stops one worker thread per provider."""
 
     def __init__(self, providers, store, policy: SyncPolicy | None = None):
+        """Create one worker per provider, all sharing the store and one stop signal."""
         self.stop = threading.Event()
         self.workers = {p.name: SyncWorker(p, store, policy, stop=self.stop) for p in providers}
         self.threads = []
 
     def start(self):
+        """Start each worker on its own daemon thread."""
         for name, worker in self.workers.items():
             t = threading.Thread(target=worker.run_forever, name=f"sync-{name}", daemon=True)
             t.start()
@@ -193,6 +210,7 @@ class SyncEngine:
                 worker.wake.set()
 
     def shutdown(self, timeout=5):
+        """Ask every worker to stop, wake any that are sleeping, and wait for their threads."""
         self.stop.set()
         for w in self.workers.values():
             w.wake.set()

@@ -83,10 +83,12 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 
 
 def iso(dt: datetime | None) -> str | None:
+    """Format a datetime for storage: ISO 8601 in UTC, keeping None as None."""
     return dt.astimezone(timezone.utc).isoformat() if dt else None
 
 
 def parse(value: str | None) -> datetime | None:
+    """Read a stored ISO 8601 timestamp back into a datetime, keeping None as None."""
     return datetime.fromisoformat(value) if value else None
 
 
@@ -103,11 +105,13 @@ class ProviderState:
 
 
 def _legs_json(legs):
+    """Serialise a bet's legs to JSON for the legs column."""
     return json.dumps([{"event_id": l.event_id, "market": l.market.value, "selection": l.selection, "line": l.line}
                        for l in legs])
 
 
 def _row_to_bet(row) -> Bet:
+    """Rebuild a canonical Bet from a stored row, so the conflict rule can compare against it."""
     legs = tuple(Leg(l["event_id"], Market(l["market"]), l["selection"], l["line"]) for l in json.loads(row["legs"]))
     return Bet(row["sportsbook"], row["external_id"], BetStatus(row["status"]), parse(row["placed_at"]),
                row["stake_cents"], legs, row["odds_american"], row["payout_cents"], parse(row["settled_at"]))
@@ -115,6 +119,7 @@ def _row_to_bet(row) -> Bet:
 
 class Store:
     def __init__(self, path: str = "betsync.db"):
+        """Open (or create) the database at path and make sure the schema exists."""
         self.path = path
         self._local = threading.local()
         self._write_lock = threading.Lock()
@@ -122,6 +127,7 @@ class Store:
             c.executescript(SCHEMA)
 
     def _conn(self) -> sqlite3.Connection:
+        """This thread's connection, opened on first use in WAL mode so reads don't block the writer."""
         conn = getattr(self._local, "conn", None)
         if conn is None:
             conn = sqlite3.connect(self.path, timeout=10, check_same_thread=False, isolation_level=None)
@@ -133,6 +139,9 @@ class Store:
 
     @contextmanager
     def transaction(self):
+        """A write transaction. Writers take turns, and everything inside commits together or is
+        rolled back together.
+        """
         with self._write_lock:
             conn = self._conn()
             try:
@@ -146,6 +155,7 @@ class Store:
     # --- provider state -------------------------------------------------------------
 
     def state(self, provider) -> ProviderState:
+        """A book's cursor and health, or an empty state if it has never synced."""
         row = self._conn().execute("SELECT * FROM provider_state WHERE provider = ?", (provider,)).fetchone()
         if not row:
             return ProviderState(provider)
@@ -154,14 +164,19 @@ class Store:
                              parse(row["next_attempt_at"]))
 
     def states(self) -> list[ProviderState]:
+        """Cursor and health for every known book."""
         rows = self._conn().execute("SELECT provider FROM provider_state ORDER BY provider").fetchall()
         return [self.state(r["provider"]) for r in rows]
 
     def ensure_provider(self, provider):
+        """Create a book's state row if it doesn't exist yet."""
         with self.transaction() as c:
             c.execute("INSERT OR IGNORE INTO provider_state (provider) VALUES (?)", (provider,))
 
     def record_cycle(self, provider, *, ok: bool, at: datetime, error: str | None, next_attempt_at: datetime):
+        """Record how a cycle went: success resets the failure count, failure records the error and
+        adds one. Either way, store when the next attempt is due.
+        """
         with self.transaction() as c:
             c.execute("INSERT OR IGNORE INTO provider_state (provider) VALUES (?)", (provider,))
             if ok:
@@ -173,6 +188,7 @@ class Store:
                           (iso(at), error, iso(at), iso(next_attempt_at), provider))
 
     def record_run(self, provider, run):
+        """Save one cycle's counts to sync_runs, keeping only each book's latest 500."""
         with self.transaction() as c:
             c.execute("INSERT INTO sync_runs (provider, started_at, finished_at, ok, pages, received, inserted, updated, "
                       "duplicate, stale, rejected, retries, repaired, error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -210,6 +226,10 @@ class Store:
         return counts
 
     def _apply(self, c, obs, now) -> Outcome:
+        """Apply one observation inside the open transaction: run the conflict rule against the stored
+        bet and write what it decides (insert, update, or for a duplicate just note the confirmation;
+        stale changes nothing). Returns the outcome, which apply_page records in the history.
+        """
         row = c.execute("SELECT * FROM bets WHERE id = ?", (obs.bet.id,)).fetchone()
         current = Current(_row_to_bet(row), parse(row["source_updated_at"])) if row else None
         decision = decide(current, obs)
@@ -238,6 +258,7 @@ class Store:
     # --- reads ----------------------------------------------------------------------
 
     def bets(self, sportsbook=None, status=None, event_id=None, limit=100, offset=0) -> list[sqlite3.Row]:
+        """Stored bet rows, newest placed first, filtered by sportsbook, status or game."""
         q, args = "SELECT * FROM bets WHERE 1=1", []
         if sportsbook:
             q, args = q + " AND sportsbook = ?", args + [sportsbook]
@@ -256,6 +277,7 @@ class Store:
         return [r["external_id"] for r in rows]
 
     def count_bets(self) -> dict:
+        """Bet counts by sportsbook, then by status."""
         rows = self._conn().execute("SELECT sportsbook, status, count(*) AS n FROM bets GROUP BY sportsbook, status").fetchall()
         out = {}
         for r in rows:
@@ -263,14 +285,17 @@ class Store:
         return out
 
     def bet(self, bet_id) -> sqlite3.Row | None:
+        """One stored bet row, or None."""
         return self._conn().execute("SELECT * FROM bets WHERE id = ?", (bet_id,)).fetchone()
 
     def history(self, bet_id, limit=50) -> list[sqlite3.Row]:
+        """A bet's observations, newest first."""
         return self._conn().execute("SELECT id, provider, received_at, source_updated_at, outcome, status, missing_fields "
                                     "FROM observations WHERE bet_id = ? ORDER BY id DESC LIMIT ?",
                                     (bet_id, limit)).fetchall()
 
     def events(self) -> list[sqlite3.Row]:
+        """Every game, with its provider aliases and the number of bets that have a leg on it."""
         return self._conn().execute(
             "SELECT e.*, (SELECT json_group_array(json_object('provider', a.provider, 'id', a.provider_event_id)) "
             "FROM event_aliases a WHERE a.event_id = e.id) AS aliases, "
@@ -278,10 +303,12 @@ class Store:
             "FROM events e ORDER BY e.starts_at, e.id").fetchall()
 
     def recent_runs(self, provider, limit=10) -> list[sqlite3.Row]:
+        """A book's most recent sync runs, newest first."""
         return self._conn().execute("SELECT * FROM sync_runs WHERE provider = ? ORDER BY id DESC LIMIT ?",
                                     (provider, limit)).fetchall()
 
     def outcome_totals(self, provider) -> dict:
+        """How many observations from a book ended in each outcome, plus how many were rejected."""
         rows = self._conn().execute("SELECT outcome, count(*) AS n FROM observations WHERE provider = ? GROUP BY outcome",
                                     (provider,)).fetchall()
         totals = {o.value: 0 for o in Outcome}

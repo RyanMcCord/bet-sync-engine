@@ -19,6 +19,7 @@ class FaultProfile:
     outage: bool = False             # everything fails with 503 until turned off
 
     def to_dict(self):
+        """The settings as a plain dict, ready for JSON."""
         d = asdict(self)
         d["latency_ms"] = list(self.latency_ms)
         return d
@@ -60,18 +61,21 @@ class Faults:
     """The live fault settings for one book, adjustable through its control endpoint."""
 
     def __init__(self, profile: FaultProfile, seed: int):
+        """profile is the starting fault settings; seed makes the failures repeatable."""
         self.profile = profile
         self.rng = random.Random(seed)
         self._lock = threading.Lock()
         self._window_start, self._count = time.monotonic(), 0
 
     def update(self, **changes):
+        """Change some fault settings, e.g. update(outage=True)."""
         with self._lock:
             if "latency_ms" in changes:
                 changes["latency_ms"] = tuple(changes["latency_ms"])
             self.profile = replace(self.profile, **changes)
 
     def chance(self, rate):
+        """True with probability rate, using this book's seeded random numbers."""
         with self._lock:
             return self.rng.random() < rate
 
@@ -89,11 +93,13 @@ class Faults:
         return None
 
     def latency(self) -> float:
+        """A random extra delay in seconds, within the profile's latency range."""
         lo, hi = self.profile.latency_ms
         with self._lock:
             return self.rng.uniform(lo, hi) / 1000 if hi else 0.0
 
     def _allow(self, per_sec):
+        """Count a request against a one-second window; False once it exceeds per_sec."""
         with self._lock:
             now = time.monotonic()
             if now - self._window_start >= 1:

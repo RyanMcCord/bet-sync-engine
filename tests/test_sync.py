@@ -21,11 +21,13 @@ def truth(rig):
 
 
 def stored(rig):
+    """What the store holds for each bet: status, stake, payout and odds."""
     return {r["id"]: (r["status"], r["stake_cents"], r["payout_cents"], r["odds_american"])
             for r in rig.store.bets(limit=1000)}
 
 
 def run_day(rig, cycles=34, step=timedelta(minutes=30)):
+    """Sync, then advance the clock, over and over: about a simulated day by default."""
     for _ in range(cycles):
         rig.sync()
         rig.clock.advance(seconds=step.total_seconds())
@@ -36,6 +38,9 @@ class ConvergenceTests(unittest.TestCase):
     """However badly the books behave, the canonical view ends up matching what they really say."""
 
     def check(self, scenario, seed=7):
+        """Sync a simulated day under a scenario, then check the store matches the simulated truth
+        for every bet. Returns the rig for further checks.
+        """
         rig = Rig(scenario, seed=seed)
         self.addCleanup(rig.close)
         run_day(rig)
@@ -49,15 +54,18 @@ class ConvergenceTests(unittest.TestCase):
         return rig
 
     def test_calm(self):
+        """With well-behaved books, the store ends up matching the truth."""
         self.check("calm")
 
     def test_realistic(self):
+        """With realistic faults it still matches, and stale and duplicate records were actually seen."""
         rig = self.check("realistic")
         totals = {p: rig.store.outcome_totals(p) for p in ("northstar", "cascade")}
         self.assertGreater(totals["northstar"]["stale"], 0)       # out-of-order versions were seen and ignored
         self.assertGreater(totals["cascade"]["duplicate"], 0)     # redeliveries were seen and ignored
 
     def test_chaos_across_seeds(self):
+        """Under heavy faults it still matches, across more than one seed."""
         for seed in (3, 11):
             with self.subTest(seed=seed):
                 self.check("chaos", seed)
@@ -65,10 +73,12 @@ class ConvergenceTests(unittest.TestCase):
 
 class IdempotencyTests(unittest.TestCase):
     def setUp(self):
+        """A fresh rig with well-behaved books."""
         self.rig = Rig("calm")
         self.addCleanup(self.rig.close)
 
     def test_syncing_again_with_nothing_new_changes_nothing(self):
+        """Syncing again with nothing new inserts or updates nothing."""
         run_day(self.rig, cycles=4)
         before = {r["id"]: (r["version"], r["content_hash"]) for r in self.rig.store.bets(limit=1000)}
         for _ in range(3):
@@ -79,6 +89,7 @@ class IdempotencyTests(unittest.TestCase):
         self.assertEqual(before, after)
 
     def test_replaying_a_whole_feed_from_the_start_changes_nothing(self):
+        """Forgetting every cursor and replaying both feeds from the start changes nothing."""
         run_day(self.rig)
         before = stored(self.rig)
         with self.rig.store.transaction() as c:   # forget every cursor
@@ -92,6 +103,7 @@ class IdempotencyTests(unittest.TestCase):
 
 class OrderingTests(unittest.TestCase):
     def test_a_late_old_version_never_reopens_a_settled_bet(self):
+        """An old open version delivered after settlement is recorded as stale and doesn't reopen the bet."""
         rig = Rig("calm")
         self.addCleanup(rig.close)
         run_day(rig)
@@ -110,6 +122,7 @@ class OrderingTests(unittest.TestCase):
 
 class MissingFieldTests(unittest.TestCase):
     def test_odds_left_out_of_an_update_are_kept(self):
+        """When a newer update leaves out the odds, the stored odds are kept."""
         rig = Rig("calm")
         self.addCleanup(rig.close)
         rig.sync("cascade")
@@ -131,6 +144,7 @@ class MissingFieldTests(unittest.TestCase):
 
 class RepairTests(unittest.TestCase):
     def test_a_field_we_never_received_is_flagged_then_fetched_again(self):
+        """A bet missing a field we never had is flagged, then re-fetched and filled in on the next cycle."""
         rig = Rig("calm")
         self.addCleanup(rig.close)
         run_day(rig)
@@ -145,6 +159,7 @@ class RepairTests(unittest.TestCase):
         self.assertEqual((after["payout_cents"], after["incomplete"]), (0, "[]"))
 
     def test_providers_without_single_record_fetch_leave_the_gap_visible(self):
+        """A book that can't fetch one record leaves the gap flagged instead of guessing."""
         rig = Rig("calm")
         self.addCleanup(rig.close)
         rig.sync("northstar")
@@ -157,6 +172,7 @@ class RepairTests(unittest.TestCase):
 
 class FailureTests(unittest.TestCase):
     def setUp(self):
+        """A rig with 3 attempts per request, recording every wait instead of sleeping."""
         self.rig = Rig("calm", policy=SyncPolicy(attempts=3, poll_interval=5, failure_backoff_cap=60))
         self.addCleanup(self.rig.close)
         self.waits = []
@@ -169,12 +185,14 @@ class FailureTests(unittest.TestCase):
         real, queue = provider.fetch, list(errors)
 
         def fetch(cursor):
+            """Raise the next queued error, or fetch for real once the queue is empty."""
             if queue:
                 raise queue.pop(0)
             return real(cursor)
         provider.fetch = fetch
 
     def test_transient_errors_are_retried_with_growing_backoff(self):
+        """Transient errors are retried, with jittered waits that grow each time."""
         self.flaky("cascade", [TransientError("503"), TransientError("timeout")])
         run = self.rig.sync("cascade")["cascade"]
         self.assertTrue(run.ok)
@@ -183,22 +201,26 @@ class FailureTests(unittest.TestCase):
         self.assertLessEqual(self.waits[1], 1.0)
 
     def test_rate_limits_wait_for_retry_after(self):
+        """A 429 waits exactly as long as Retry-After says."""
         self.flaky("northstar", [RateLimited("429", retry_after=7)])
         self.assertTrue(self.rig.sync("northstar")["northstar"].ok)
         self.assertEqual(self.waits, [7])
 
     def test_permanent_errors_are_not_retried(self):
+        """A permanent error fails the cycle without retrying."""
         self.flaky("northstar", [PermanentError("400")])
         run = self.rig.sync("northstar")["northstar"]
         self.assertFalse(run.ok)
         self.assertEqual(run.retries, 0)
 
     def test_partial_success_is_kept_and_resumes_where_it_stopped(self):
+        """Pages applied before a failure are kept, and the next cycle resumes at the failed page."""
         provider = self.rig.providers["cascade"]
         real = provider.fetch
         calls = []
 
         def fetch(cursor):
+            """Serve small pages, and fail on the second call."""
             calls.append(cursor)
             if len(calls) == 2:
                 raise PermanentError("page 2 broke")
@@ -215,10 +237,12 @@ class FailureTests(unittest.TestCase):
         self.assertEqual(len(stored(self.rig)), len([k for k in truth(self.rig) if k.startswith("cascade")]))
 
     def test_a_record_that_cant_be_read_is_set_aside_not_fatal(self):
+        """One unreadable record is set aside as rejected, and the rest of the page still syncs."""
         provider = self.rig.providers["northstar"]
         real = provider.fetch
 
         def fetch(cursor):
+            """Put one unreadable record at the front of each real page."""
             page = real(cursor)
             return page.__class__([{"betId": "NS-BROKEN", "status": "???"}] + page.records, page.next_cursor, page.has_more)
         provider.fetch = fetch
@@ -229,6 +253,7 @@ class FailureTests(unittest.TestCase):
         self.assertGreater(run.counts[Outcome.INSERTED], 0)
 
     def test_one_book_down_doesnt_affect_the_other(self):
+        """An outage at Cascade doesn't stop Northstar from syncing."""
         self.rig.sim.cascade.faults.update(outage=True)
         runs = self.rig.sync()
         self.assertFalse(runs["cascade"].ok)
@@ -236,6 +261,7 @@ class FailureTests(unittest.TestCase):
         self.assertGreater(len(self.rig.store.bets(sportsbook="northstar")), 0)
 
     def test_failed_cycles_back_off_and_success_resets(self):
+        """Each failed cycle doubles the wait before the next, up to the cap; one success resets it."""
         w = self.rig.workers["cascade"]
         self.assertEqual([w.next_delay(n) for n in range(6)], [5, 10, 20, 40, 60, 60])
         self.rig.sim.cascade.faults.update(outage=True)
@@ -251,14 +277,19 @@ class FailureTests(unittest.TestCase):
 
 class FreshnessTests(unittest.TestCase):
     def setUp(self):
+        """A fresh rig and a read service on its clock."""
         self.rig = Rig("calm")
         self.addCleanup(self.rig.close)
         self.svc = ReadService(self.rig.store, ["northstar", "cascade"], now=lambda: self.rig.clock.now())
 
     def status(self, name):
+        """A book's freshness status right now."""
         return self.svc.provider_health(name)["status"]
 
     def test_lifecycle_of_a_failing_book(self):
+        """A book goes never_synced, ok, degraded, then stale as an outage goes on, and back to ok
+        once it recovers, while the other book stays ok.
+        """
         self.assertEqual(self.status("cascade"), "never_synced")
         self.rig.sync()
         self.assertEqual(self.status("cascade"), "ok")
@@ -281,6 +312,7 @@ class FreshnessTests(unittest.TestCase):
         self.assertEqual(self.status("cascade"), "ok")
 
     def test_bet_detail_shows_its_history(self):
+        """A settled bet's detail shows its history, from inserted to updated, and its version."""
         run_day(self.rig, cycles=34)
         settled = next(r for r in self.rig.store.bets(limit=1000) if r["status"] in ("won", "lost"))
         detail = self.svc.bet(settled["id"])

@@ -10,6 +10,9 @@ from .cascade import Cascade
 
 class Simulator:
     def __init__(self, clock, scenario="realistic", seed=7):
+        """Build the seeded world and both books, each with its own copy of the scenario's fault
+        settings. Raises ValueError for an unknown scenario.
+        """
         if scenario not in SCENARIOS:
             raise ValueError(f"unknown scenario {scenario!r}; choose from {', '.join(SCENARIOS)}")
         self.clock, self.scenario = clock, scenario

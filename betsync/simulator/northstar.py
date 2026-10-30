@@ -18,18 +18,22 @@ MARKET = {"moneyline": "MONEYLINE", "spread": "SPREAD", "total": "TOTAL"}
 
 
 def _iso(dt):
+    """Format a datetime as Northstar does: ISO 8601 in UTC with a Z."""
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _dollars(cents):
+    """Format cents as a dollar string like '25.00', keeping None as None."""
     return None if cents is None else f"{cents / 100:.2f}"
 
 
 def _american(odds):
+    """Format American odds as Northstar does: '+150' or '-110'."""
     return f"+{odds}" if odds > 0 else str(odds)
 
 
 def render(bet, version):
+    """Render one version of a simulated bet as a Northstar record."""
     return {
         "betId": f"NS-{10000 + bet.number}",
         "placedAt": _iso(bet.placed_at),
@@ -54,9 +58,14 @@ class Northstar:
     name = "northstar"
 
     def __init__(self, world, faults: Faults):
+        """world holds the true bets; faults decides how this book misbehaves."""
         self.world, self.faults = world, faults
 
     def list_bets(self, params: dict) -> Response:
+        """GET /v1/bets: bets changed since updated_since, oldest change first, paged by page_token.
+        Subject to faults, which include duplicates across pages and a lagging replica that serves
+        older versions.
+        """
         failure = self.faults.before()
         if failure:
             return failure

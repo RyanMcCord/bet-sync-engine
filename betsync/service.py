@@ -28,11 +28,13 @@ class FreshnessPolicy:
 
 
 def utcnow():
+    """The current time in UTC (the default clock; tests pass their own)."""
     return datetime.now(timezone.utc)
 
 
 class ReadService:
     def __init__(self, store: Store, providers: list[str], policy: FreshnessPolicy | None = None, now=utcnow):
+        """store holds the data; providers lists the books to report on; policy sets the freshness window."""
         self.store, self.providers = store, providers
         self.policy = policy or FreshnessPolicy()
         self.now = now
@@ -40,6 +42,9 @@ class ReadService:
     # --- freshness ----------------------------------------------------------------------
 
     def provider_health(self, name) -> dict:
+        """One book's freshness: never_synced, stale (no success inside the window), degraded (recent
+        attempts failing but data still recent) or ok, with its timings and last error.
+        """
         s = self.store.state(name)
         now = self.now()
         age = (now - s.last_success_at).total_seconds() if s.last_success_at else None
@@ -64,11 +69,13 @@ class ReadService:
         }
 
     def _freshness_by_book(self):
+        """Health for every book, keyed by name."""
         return {name: self.provider_health(name) for name in self.providers}
 
     # --- endpoints ----------------------------------------------------------------------
 
     def bets(self, sportsbook=None, status=None, event_id=None, limit=100, offset=0) -> dict:
+        """A page of canonical bets, each carrying its own book's freshness, plus a summary per book."""
         health = self._freshness_by_book()
         rows = self.store.bets(sportsbook, status, event_id, limit, offset)
         return {
@@ -78,6 +85,7 @@ class ReadService:
         }
 
     def bet(self, bet_id) -> dict | None:
+        """One bet with its observation history (newest first), or None if we've never seen it."""
         row = self.store.bet(bet_id)
         if not row:
             return None
@@ -89,6 +97,7 @@ class ReadService:
         return out
 
     def events(self) -> dict:
+        """Every canonical game, with each book's ID for it and how many bets have a leg on it."""
         return {"events": [{
             "id": e["id"], "league": e["league"], "away": e["away"], "home": e["home"], "starts_at": e["starts_at"],
             "teams_recognised": bool(e["teams_known"]),
@@ -97,6 +106,7 @@ class ReadService:
         } for e in self.store.events()]}
 
     def status(self) -> dict:
+        """Health per book, with outcome totals and recent runs, and the worst status as the overall one."""
         providers = {}
         for name in self.providers:
             h = self.provider_health(name)
@@ -118,6 +128,7 @@ class ReadService:
         }
 
     def _bet(self, r, health) -> dict:
+        """Turn a stored bet row into its API shape, attaching its book's freshness."""
         book = health.get(r["sportsbook"]) or {"status": "never_synced", "last_success_at": None}
         return {
             "id": r["id"],
@@ -146,9 +157,11 @@ class ReadService:
 
 
 def _summary(h):
+    """The short form of a book's health, as included with every list of bets."""
     return {"status": h["status"], "last_success_at": h["last_success_at"],
             "seconds_since_success": h["seconds_since_success"]}
 
 
 def _iso(dt):
+    """Format a datetime as ISO 8601, keeping None as None."""
     return dt.isoformat() if dt else None

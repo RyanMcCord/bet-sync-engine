@@ -16,6 +16,7 @@ PAGE_SIZE = 50
 
 
 def _ts(epoch):
+    """Cascade timestamps are epoch seconds; turn one into a UTC datetime."""
     return datetime.fromtimestamp(int(epoch), tz=timezone.utc)
 
 
@@ -23,9 +24,13 @@ class CascadeProvider(Provider):
     name = "cascade"
 
     def __init__(self, get_json):
+        """get_json is (path, params) -> dict, raising the errors in base.py."""
         self.get_json = get_json
 
     def fetch(self, cursor):
+        """Get the next changes after the cursor (a sequence number). The new cursor is the last
+        sequence returned, and never moves backwards.
+        """
         since = int(cursor or 0)
         body = self.get_json("/api/tickets/changes", {"since_seq": since, "max": PAGE_SIZE})
         if not isinstance(body.get("changes"), list):
@@ -34,13 +39,19 @@ class CascadeProvider(Provider):
         return Page([c.get("ticket") for c in body["changes"]], str(max(last, since)), bool(body.get("more")))
 
     def fetch_record(self, external_id):
+        """Fetch one ticket as it stands now, to fill in fields an earlier record left out."""
         body = self.get_json(f"/api/tickets/{int(external_id)}", {})
         return body.get("ticket")
 
     def record_id(self, raw):
+        """The ticket number of a raw record, or '?' if it has none."""
         return str(raw.get("ticket", "?")) if isinstance(raw, dict) else "?"
 
     def to_observation(self, raw):
+        """Translate one Cascade ticket into the canonical model: decimal odds to American, one-letter
+        states to statuses, home/away sides to team codes. Absent optional fields are reported as
+        missing rather than guessed. Raises RecordError if the ticket can't be read.
+        """
         try:
             events, legs = [], []
             for leg in raw["legs"]:
