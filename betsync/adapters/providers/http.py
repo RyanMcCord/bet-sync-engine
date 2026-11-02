@@ -1,10 +1,12 @@
 """A small JSON-over-HTTP client that turns transport outcomes into the provider error types."""
 import requests
 
-from .base import PermanentError, RateLimited, TransientError
+from ...ports import PermanentError, RateLimited, TransientError
 
 
 class HttpClient:
+    """A small JSON-over-HTTP client that turns HTTP trouble into the Provider port's typed errors."""
+
     def __init__(self, base_url: str, timeout: float = 3.0, session=None):
         """base_url is the provider's root URL; timeout applies to every request, in seconds."""
         self.base_url = base_url.rstrip("/")

@@ -54,6 +54,8 @@ def render(bet, version, team_names):
 
 
 class Cascade:
+    """Simulated Cascade Bet: a change feed with redelivery and missing fields."""
+
     name = "cascade"
     OPTIONAL = ("decimal_odds", "return")
 

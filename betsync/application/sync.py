@@ -4,7 +4,8 @@ A sync cycle, for one provider:
   1. Fetch a page from the saved cursor. Transient failures are retried with exponential
      backoff and jitter; a 429 waits for Retry-After; a permanent error ends the cycle.
   2. Translate each record (a record that can't be translated is set aside; the rest go on).
-  3. Apply the page and advance the cursor in one transaction.
+  3. Run the conflict rule on each record and write what it decides, then advance the
+     cursor, all in one transaction (apply_page).
   4. Repeat while the provider has more, up to a page limit per cycle.
   5. Re-fetch a few bets that are still missing fields they should have (e.g. a settled bet
      whose payout the provider left out), if the provider supports single-record fetches.
@@ -18,17 +19,19 @@ from __future__ import annotations
 import logging
 import random
 import threading
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
-from .domain import Outcome
-from .providers.base import Provider, ProviderError, RateLimited, RecordError
+from ..domain import Observation, Outcome, decide
+from ..ports import PageWriter, Provider, ProviderError, RateLimited, RecordError, RunResult, SyncStore
 
 log = logging.getLogger("betsync.sync")
 
 
 @dataclass
 class SyncPolicy:
+    """How hard and how often a worker tries. The defaults suit the simulated books."""
+
     poll_interval: float = 5.0          # seconds between cycles when all is well
     attempts: int = 4                   # tries per request before the cycle gives up
     backoff_base: float = 0.5           # first retry waits up to this long
@@ -39,27 +42,49 @@ class SyncPolicy:
     repairs_per_cycle: int = 10         # incomplete bets to re-fetch per cycle
 
 
-@dataclass
-class RunResult:
-    started_at: datetime
-    finished_at: datetime | None = None
-    ok: bool = False
-    pages: int = 0
-    received: int = 0
-    rejected: int = 0
-    retries: int = 0
-    repaired: int = 0
-    error: str | None = None
-    counts: dict = field(default_factory=lambda: {o: 0 for o in Outcome})
-
-
 def utcnow():
     """The current time in UTC (the default clock; tests pass their own)."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
+
+
+def apply_page(store: SyncStore, provider: str, observations: list[Observation], rejected: list[tuple],
+               next_cursor: str | None, now: datetime) -> dict:
+    """Apply a page of observations and move the cursor, all in one transaction, so a crash
+    mid-page means the page is fetched again rather than lost. Each observation goes through
+    the conflict rule (domain.decide) and the outcome decides what's written. Returns counts
+    per Outcome.
+    """
+    counts = dict.fromkeys(Outcome, 0)
+    with store.page() as tx:
+        for obs in observations:
+            tx.save_events(provider, obs.events, obs.event_aliases)
+            outcome = _apply(tx, obs, now)
+            tx.record_observation(provider, obs, outcome, now)
+            counts[outcome] += 1
+        for record_id, reason, raw in rejected:
+            tx.record_rejected(provider, record_id, reason, raw, now)
+        tx.set_cursor(provider, next_cursor)
+    return counts
+
+
+def _apply(tx: PageWriter, obs: Observation, now: datetime) -> Outcome:
+    """Decide what one observation means for the stored bet, and write that: insert, update,
+    or for a duplicate just note the confirmation. A stale observation changes nothing.
+    """
+    decision = decide(tx.current(obs.bet.id), obs)
+    if decision.outcome is Outcome.INSERTED:
+        tx.insert_bet(decision.bet, obs.source_updated_at, now)
+    elif decision.outcome is Outcome.UPDATED:
+        tx.update_bet(decision.bet, obs.source_updated_at, decision.carried_over, now)
+    elif decision.outcome is Outcome.DUPLICATE:
+        tx.confirm_bet(obs.bet.id, obs.source_updated_at, now)
+    return decision.outcome
 
 
 class SyncWorker:
-    def __init__(self, provider: Provider, store, policy: SyncPolicy | None = None, *,
+    """Syncs one provider: runs cycles on a schedule, with its own cursor, retries and health."""
+
+    def __init__(self, provider: Provider, store: SyncStore, policy: SyncPolicy | None = None, *,
                  now=utcnow, rng: random.Random | None = None, stop: threading.Event | None = None):
         """Set up a worker for one provider. now, rng and stop can be replaced in tests to control
         time, jitter and sleeping.
@@ -92,7 +117,7 @@ class SyncWorker:
                     except RecordError as e:
                         rejected.append((self.provider.record_id(raw), str(e), raw))
                         log.warning("%s: set aside a record: %s", name, e)
-                counts = self.store.apply_page(name, observations, rejected, page.next_cursor, self.now())
+                counts = apply_page(self.store, name, observations, rejected, page.next_cursor, self.now())
                 cursor = page.next_cursor
                 run.pages += 1
                 run.received += len(page.records)
@@ -113,7 +138,8 @@ class SyncWorker:
         self.store.record_run(name, run)
         c = run.counts
         log.log(logging.INFO if run.ok else logging.WARNING,
-                "%s: %s pages=%d received=%d inserted=%d updated=%d duplicate=%d stale=%d rejected=%d retries=%d repaired=%d%s",
+                "%s: %s pages=%d received=%d inserted=%d updated=%d duplicate=%d stale=%d rejected=%d "
+                "retries=%d repaired=%d%s",
                 name, "ok" if run.ok else "FAILED", run.pages, run.received, c[Outcome.INSERTED], c[Outcome.UPDATED],
                 c[Outcome.DUPLICATE], c[Outcome.STALE], run.rejected, run.retries, run.repaired,
                 f" error={run.error}" if run.error else "")
@@ -132,7 +158,7 @@ class SyncWorker:
             except (ProviderError, RecordError) as e:
                 log.info("%s: couldn't repair %s yet: %s", name, external_id, e)
                 continue
-            counts = self.store.apply_page(name, [obs], [], self.store.state(name).cursor, self.now())
+            counts = apply_page(self.store, name, [obs], [], self.store.state(name).cursor, self.now())
             if counts[Outcome.UPDATED] and not obs.bet.unknown_fields():
                 run.repaired += 1
 
@@ -190,7 +216,7 @@ class SyncWorker:
 class SyncEngine:
     """Starts and stops one worker thread per provider."""
 
-    def __init__(self, providers, store, policy: SyncPolicy | None = None):
+    def __init__(self, providers: list[Provider], store: SyncStore, policy: SyncPolicy | None = None):
         """Create one worker per provider, all sharing the store and one stop signal."""
         self.stop = threading.Event()
         self.workers = {p.name: SyncWorker(p, store, policy, stop=self.stop) for p in providers}

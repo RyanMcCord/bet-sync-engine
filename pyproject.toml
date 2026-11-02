@@ -1,0 +1,44 @@
+# Lint rules for bet-sync-engine. These are hard rules (see METHODOLOGY.md): CI fails if
+# `ruff check .` reports anything. Run it locally with: pip install ruff && ruff check .
+#
+# Two rules ruff can't express are enforced by tests/test_methodology.py instead:
+# every function (private and nested ones included) has a docstring, and imports follow
+# the hexagonal layers.
+
+[project]
+name = "bet-sync-engine"
+version = "0.1.0"
+description = "Turns two imperfect, simulated sportsbooks into one dependable canonical view of a bettor's bets."
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle: errors and warnings
+    "F",        # pyflakes: unused imports and names, undefined names
+    "I",        # isort: import order
+    "B",        # flake8-bugbear: likely bugs
+    "UP",       # pyupgrade: modern syntax for the target Python
+    "N",        # pep8-naming
+    "SIM",      # flake8-simplify
+    "C4",       # flake8-comprehensions
+    "D1",       # pydocstyle: a docstring on every public module, package, class, method and function
+    "D3",       # pydocstyle: docstrings use triple double quotes
+    "D419",     # pydocstyle: no empty docstrings
+    "T20",      # no print(): use logging
+]
+ignore = [
+    "N818",     # RateLimited reads better than RateLimitedError, and it's raised like one
+    "UP042",    # Outcome/BetStatus are (str, Enum) on purpose; StrEnum changes how they format
+    "SIM105",   # an explicit try/except/pass is clearer than contextlib.suppress here
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["betsync"]
+
+[tool.ruff.lint.per-file-ignores]
+"betsync/ports.py" = ["B027"]   # Provider's optional hooks are deliberately non-abstract

@@ -5,17 +5,17 @@ import socket
 import threading
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import requests
 import uvicorn
 
-from betsync import providers
-from betsync.providers.base import RateLimited, TransientError
-from betsync.service import FreshnessPolicy, ReadService
+from betsync.adapters import providers
+from betsync.application.read import FreshnessPolicy, ReadService
+from betsync.application.sync import SyncEngine, SyncPolicy
+from betsync.ports import RateLimited, TransientError
 from betsync.simulator import ScaledClock, Simulator
 from betsync.simulator.http import create_app
-from betsync.sync import SyncEngine, SyncPolicy
 
 from .support import temp_store
 
@@ -38,10 +38,12 @@ def wait_for(check, timeout=15.0, every=0.1):
 
 
 class HttpEndToEndTests(unittest.TestCase):
+    """The simulated books on a real HTTP server, synced by the real engine and client."""
+
     @classmethod
     def setUpClass(cls):
         """Serve the simulated books on a real local HTTP server, with time running 600x faster."""
-        cls.sim = Simulator(ScaledClock(datetime.now(timezone.utc), speed=600), scenario="calm", seed=7)
+        cls.sim = Simulator(ScaledClock(datetime.now(UTC), speed=600), scenario="calm", seed=7)
         port = free_port()
         cls.base = f"http://127.0.0.1:{port}"
         cls.server = uvicorn.Server(uvicorn.Config(create_app(cls.sim), host="127.0.0.1", port=port,
@@ -94,7 +96,9 @@ class HttpEndToEndTests(unittest.TestCase):
         service = ReadService(self.store, ["northstar", "cascade"], FreshnessPolicy(stale_after=1.5))
         engine.start()
         self.addCleanup(engine.shutdown)
-        status = lambda name: service.status()["providers"][name]["status"]
+        def status(name):
+            """One book's freshness status right now."""
+            return service.status()["providers"][name]["status"]
 
         self.assertTrue(wait_for(lambda: service.status()["status"] == "ok"), service.status())
         counts = service.status()["bets"]
@@ -112,7 +116,8 @@ class HttpEndToEndTests(unittest.TestCase):
 
         # And recovers on its own once it's back.
         self.control("cascade", outage=False)
-        self.assertTrue(wait_for(lambda: status("cascade") == "ok", timeout=5), service.status()["providers"]["cascade"])
+        self.assertTrue(wait_for(lambda: status("cascade") == "ok", timeout=5),
+                        service.status()["providers"]["cascade"])
 
 
 if __name__ == "__main__":

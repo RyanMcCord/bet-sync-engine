@@ -7,12 +7,14 @@ try:
 except ImportError:   # pragma: no cover
     HAVE_FASTAPI = False
 
-from betsync.service import ReadService
+from betsync.application.read import ReadService
 
 from .support import Rig
 
 
 class FakeEngine:
+    """Stands in for the sync engine, so API tests can check what was triggered."""
+
     def __init__(self):
         """Pretend to have a worker per book, and record which syncs were triggered."""
         self.workers, self.triggered = {"northstar": None, "cascade": None}, []
@@ -32,10 +34,12 @@ class FakeEngine:
 
 @unittest.skipUnless(HAVE_FASTAPI, "FastAPI isn't installed (pip install -r requirements.txt)")
 class ApiTests(unittest.TestCase):
+    """The HTTP API, over a store filled by a simulated day of syncing."""
+
     @classmethod
     def setUpClass(cls):
         """Sync a simulated day under the realistic scenario, then serve it through the test client."""
-        from betsync.api import create_app
+        from betsync.adapters.api import create_app
         cls.rig = Rig("realistic")
         for _ in range(30):
             cls.rig.sync()
@@ -68,7 +72,7 @@ class ApiTests(unittest.TestCase):
         event = max(self.client.get("/events").json()["events"], key=lambda e: e["bets"])
         bets = self.client.get("/bets", params={"event_id": event["id"], "limit": 500}).json()["bets"]
         self.assertEqual(len(bets), event["bets"])
-        self.assertTrue(all(any(l["event_id"] == event["id"] for l in b["legs"]) for b in bets))
+        self.assertTrue(all(any(leg["event_id"] == event["id"] for leg in b["legs"]) for b in bets))
 
     def test_one_bet_with_history(self):
         """/bets/{id} includes the history back to the insert, and an unknown ID is a 404."""

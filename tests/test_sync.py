@@ -2,10 +2,10 @@
 import unittest
 from datetime import timedelta
 
+from betsync.application.read import ReadService
+from betsync.application.sync import SyncPolicy, apply_page
 from betsync.domain import Outcome
-from betsync.providers.base import PermanentError, RateLimited, TransientError
-from betsync.service import ReadService
-from betsync.sync import SyncPolicy
+from betsync.ports import PermanentError, RateLimited, TransientError
 
 from .support import Rig
 
@@ -72,6 +72,8 @@ class ConvergenceTests(unittest.TestCase):
 
 
 class IdempotencyTests(unittest.TestCase):
+    """Seeing the same information again changes nothing."""
+
     def setUp(self):
         """A fresh rig with well-behaved books."""
         self.rig = Rig("calm")
@@ -102,6 +104,8 @@ class IdempotencyTests(unittest.TestCase):
 
 
 class OrderingTests(unittest.TestCase):
+    """Out-of-order updates never overwrite newer state."""
+
     def test_a_late_old_version_never_reopens_a_settled_bet(self):
         """An old open version delivered after settlement is recorded as stale and doesn't reopen the bet."""
         rig = Rig("calm")
@@ -114,28 +118,31 @@ class OrderingTests(unittest.TestCase):
         from betsync.simulator.northstar import render
         old = render(bet, bet.versions[0])              # the "open" version, delivered late
         obs = rig.providers["northstar"].to_observation(old)
-        counts = rig.store.apply_page("northstar", [obs], [], rig.store.state("northstar").cursor, rig.clock.now())
+        counts = apply_page(rig.store, "northstar", [obs], [], rig.store.state("northstar").cursor, rig.clock.now())
         self.assertEqual(counts[Outcome.STALE], 1)
         self.assertEqual(rig.store.bet(target["id"])["status"], target["status"])
         self.assertEqual(rig.store.history(target["id"])[0]["outcome"], "stale")   # but it's on record
 
 
 class MissingFieldTests(unittest.TestCase):
+    """Fields a book leaves out aren't erased."""
+
     def test_odds_left_out_of_an_update_are_kept(self):
         """When a newer update leaves out the odds, the stored odds are kept."""
         rig = Rig("calm")
         self.addCleanup(rig.close)
         rig.sync("cascade")
         row = next(r for r in rig.store.bets(sportsbook="cascade", limit=1000))
-        bet, version = next((b, v) for b, v in rig.sim.world.current_bets("cascade") if f"cascade:{77000 + b.number}" == row["id"])
-        from betsync.simulator.cascade import render
+        bet, version = next((b, v) for b, v in rig.sim.world.current_bets("cascade")
+                            if f"cascade:{77000 + b.number}" == row["id"])
         from betsync.domain import TEAMS
+        from betsync.simulator.cascade import render
         newer = render(bet, version, TEAMS)
         newer["updated"] += 60
         newer["stake"] += 100           # something really changed...
         del newer["decimal_odds"]       # ...and the odds were left out
         obs = rig.providers["cascade"].to_observation(newer)
-        rig.store.apply_page("cascade", [obs], [], rig.store.state("cascade").cursor, rig.clock.now())
+        apply_page(rig.store, "cascade", [obs], [], rig.store.state("cascade").cursor, rig.clock.now())
         after = rig.store.bet(row["id"])
         self.assertEqual(after["odds_american"], row["odds_american"])
         self.assertEqual(after["stake_cents"], row["stake_cents"] + 100)
@@ -143,6 +150,8 @@ class MissingFieldTests(unittest.TestCase):
 
 
 class RepairTests(unittest.TestCase):
+    """Bets missing fields we never had are flagged and re-fetched."""
+
     def test_a_field_we_never_received_is_flagged_then_fetched_again(self):
         """A bet missing a field we never had is flagged, then re-fetched and filled in on the next cycle."""
         rig = Rig("calm")
@@ -150,7 +159,8 @@ class RepairTests(unittest.TestCase):
         run_day(rig)
         row = next(r for r in rig.store.bets(sportsbook="cascade", limit=1000) if r["status"] == "lost")
         with rig.store.transaction() as c:   # as if the settled ticket had arrived without its payout
-            c.execute("UPDATE bets SET payout_cents = NULL, incomplete = '[\"payout_cents\"]' WHERE id = ?", (row["id"],))
+            c.execute("UPDATE bets SET payout_cents = NULL, incomplete = '[\"payout_cents\"]' WHERE id = ?",
+                      (row["id"],))
         svc = ReadService(rig.store, ["northstar", "cascade"], now=lambda: rig.clock.now())
         self.assertEqual(svc.bet(row["id"])["freshness"]["unknown_fields"], ["payout_cents"])
         run = rig.sync("cascade")["cascade"]
@@ -171,6 +181,8 @@ class RepairTests(unittest.TestCase):
 
 
 class FailureTests(unittest.TestCase):
+    """Retries, backoff, partial success and isolation between books."""
+
     def setUp(self):
         """A rig with 3 attempts per request, recording every wait instead of sleeping."""
         self.rig = Rig("calm", policy=SyncPolicy(attempts=3, poll_interval=5, failure_backoff_cap=60))
@@ -244,7 +256,8 @@ class FailureTests(unittest.TestCase):
         def fetch(cursor):
             """Put one unreadable record at the front of each real page."""
             page = real(cursor)
-            return page.__class__([{"betId": "NS-BROKEN", "status": "???"}] + page.records, page.next_cursor, page.has_more)
+            broken = {"betId": "NS-BROKEN", "status": "???"}
+            return page.__class__([broken, *page.records], page.next_cursor, page.has_more)
         provider.fetch = fetch
         run = self.rig.sync("northstar")["northstar"]
         self.assertTrue(run.ok)
@@ -276,6 +289,8 @@ class FailureTests(unittest.TestCase):
 
 
 class FreshnessTests(unittest.TestCase):
+    """How a book's freshness status changes as syncs succeed and fail."""
+
     def setUp(self):
         """A fresh rig and a read service on its clock."""
         self.rig = Rig("calm")

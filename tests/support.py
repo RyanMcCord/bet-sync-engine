@@ -2,20 +2,20 @@
 import os
 import random
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from betsync.providers import CascadeProvider, NorthstarProvider
-from betsync.providers.base import PermanentError, RateLimited, TransientError
+from betsync.adapters.providers import CascadeProvider, NorthstarProvider
+from betsync.adapters.sqlite_store import Store
+from betsync.application.sync import SyncPolicy, SyncWorker
+from betsync.ports import PermanentError, RateLimited, TransientError
 from betsync.simulator import ManualClock, Simulator
-from betsync.store import Store
-from betsync.sync import SyncPolicy, SyncWorker
 
-START = datetime(2026, 11, 1, 19, 0, tzinfo=timezone.utc)
+START = datetime(2026, 11, 1, 19, 0, tzinfo=UTC)
 CLIENT_TIMEOUT = 3.0
 
 
 def in_process(routes, timeout=CLIENT_TIMEOUT):
-    """A get_json for an adapter that calls a simulated book directly. Mirrors providers/http.py:
+    """A get_json for an adapter that calls a simulated book directly. Mirrors adapters/providers/http.py:
     a response slower than the timeout is a timeout, 429 is rate limited, 5xx transient, 4xx permanent.
     routes: (path) -> handler(params) or None."""
     def get_json(path, params):

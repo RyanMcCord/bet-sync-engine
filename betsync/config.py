@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 @dataclass
 class Config:
+    """Every setting, with its default. Flags and BETSYNC_* environment variables override them."""
+
     host: str = "127.0.0.1"
     port: int = 8000
     db_path: str = "betsync.db"

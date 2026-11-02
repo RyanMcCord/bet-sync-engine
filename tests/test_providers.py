@@ -1,10 +1,10 @@
 """The two adapters: each sportsbook's schema in, the same canonical model out."""
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
+from betsync.adapters.providers import CascadeProvider, NorthstarProvider
 from betsync.domain import BetStatus, Market
-from betsync.providers import CascadeProvider, NorthstarProvider
-from betsync.providers.base import PermanentError, RecordError
+from betsync.ports import PermanentError, RecordError
 
 NS_BET = {
     "betId": "NS-10007", "placedAt": "2026-11-01T18:00:00Z", "status": "SETTLED_WIN",
@@ -17,7 +17,7 @@ NS_BET = {
 }
 def epoch(text):
     """An ISO 8601 timestamp as epoch seconds."""
-    return int(datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp())
+    return int(datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC).timestamp())
 
 
 CS_TICKET = {
@@ -30,6 +30,8 @@ CS_TICKET = {
 
 
 class MappingTests(unittest.TestCase):
+    """Each adapter's translation into the canonical model."""
+
     def test_same_bet_same_canonical_shape(self):
         """The same bet from either book becomes the same canonical bet on the same game."""
         ns = NorthstarProvider(None).to_observation(NS_BET)
@@ -58,7 +60,7 @@ class MappingTests(unittest.TestCase):
             {"game": CS_TICKET["legs"][0]["game"], "type": "total", "side": "over", "points": 221.5},
             {"game": CS_TICKET["legs"][0]["game"], "type": "spread", "side": "away", "points": 4.5}])
         legs = CascadeProvider(None).to_observation(ticket).bet.legs
-        self.assertEqual([(l.market, l.selection, l.line) for l in legs],
+        self.assertEqual([(leg.market, leg.selection, leg.line) for leg in legs],
                          [(Market.TOTAL, "over", 221.5), (Market.SPREAD, "PHX", 4.5)])
 
     def test_bad_record_raises_record_error(self):
@@ -70,6 +72,8 @@ class MappingTests(unittest.TestCase):
 
 
 class CursorTests(unittest.TestCase):
+    """How each adapter pages through its book and where it resumes."""
+
     def test_northstar_follows_pages_then_rereads_an_overlap(self):
         """Northstar follows page tokens, then starts the next sweep just before the newest change seen."""
         calls, pages = [], [

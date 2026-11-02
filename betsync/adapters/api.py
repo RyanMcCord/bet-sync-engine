@@ -5,8 +5,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 
-from .domain import BetStatus
-from .service import ReadService
+from ..application.read import ReadService
+from ..domain import BetStatus
 
 
 def create_app(service: ReadService, engine=None, upstream=None) -> FastAPI:

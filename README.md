@@ -16,7 +16,9 @@ python -m betsync --fresh
 
 This starts one process with three parts: the two simulated sportsbooks, a sync worker per book, and the API on <http://127.0.0.1:8000>. Interactive API docs are at <http://127.0.0.1:8000/docs>. Simulated time runs 60× faster than real time (`--speed`), so games finish and bets settle within a few minutes. The default fault scenario is `realistic`; use `--scenario calm` for well-behaved books or `--scenario chaos` for heavy weather. `python -m betsync --help` lists every setting.
 
-Tests: `python -m unittest` (about 50 tests, a few seconds).
+Tests: `python -m unittest` (about 50 tests, a few seconds). Lint: `pip install -r requirements-dev.txt && ruff check .`
+
+Every change follows the hard rules in [METHODOLOGY.md](METHODOLOGY.md): hexagonal layers, docstrings on everything, and the lint rules in `pyproject.toml`. CI enforces all three.
 
 ### Try it
 
@@ -56,19 +58,21 @@ The simulation is seeded (`--seed`). The same seed gives the same games, bets an
 ## How it works
 
 ```
- simulated books           adapters                     sync engine                          API
- (betsync/simulator)       (betsync/providers)          (betsync/sync.py, store.py)          (api.py, service.py)
+ simulated books        adapters/providers            application/sync.py                     adapters/api.py
+ (betsync/simulator)    (Provider port)               (use case; SyncStore port)              (calls application/read.py)
 
  Northstar ──HTTP──▶ NorthstarProvider ─┐   fetch page → translate → decide → store + cursor   /bets
                                          ├─▶ (one worker per book, own retries and health)  ─▶ /bets/{id}
  Cascade   ──HTTP──▶ CascadeProvider  ──┘                     │                                /events
                                                               ▼                                /status
-                                                   SQLite: canonical state + history
+                                       adapters/sqlite_store.py: canonical state + history
 ```
 
-### Provider adapters (`betsync/providers/`)
+The code is laid out as ports and adapters (hexagonal). `domain.py` holds the model and the conflict rule; `ports.py` defines what the use cases need from the outside world; `application/` holds the use cases; `adapters/` implements the ports. Dependencies only point inwards, and a test fails CI if they don't. [METHODOLOGY.md](METHODOLOGY.md) has the rules.
 
-An adapter does two things: `fetch(cursor)` gets a page of raw records, and `to_observation(raw)` translates one record into the canonical model. It can optionally do a third, `fetch_record(id)`, which re-fetches one record to fill in missing fields. Retries, deduplication, conflict resolution, storage and health live in the engine, so neither adapter contains logic for the other book, and adding a third book means writing one file. Adapters raise one of four typed errors: `TransientError`, `RateLimited`, `PermanentError`, or `RecordError` for a single bad record.
+### Provider adapters (`betsync/adapters/providers/`, the `Provider` port in `betsync/ports.py`)
+
+An adapter does two things: `fetch(cursor)` gets a page of raw records, and `to_observation(raw)` translates one record into the canonical model. It can optionally do a third, `fetch_record(id)`, which re-fetches one record to fill in missing fields. Retries, deduplication, conflict resolution, storage and health live in the sync use case, so neither adapter contains logic for the other book, and adding a third book means writing one file. Adapters raise one of four typed errors: `TransientError`, `RateLimited`, `PermanentError`, or `RecordError` for a single bad record.
 
 ### Canonical model and data ownership (`betsync/domain.py`)
 
@@ -84,11 +88,11 @@ Following one Cascade ticket from start to finish (the values are an example):
 
 1. The Cascade worker asks the change feed for changes after its saved cursor (`since_seq=212`) and gets ticket `77003` as `{"state": "W", "stake": 2500, "decimal_odds": 2.5, "return": 6250, "updated": 1793671800, ...}`.
 2. `CascadeProvider.to_observation` translates it to a canonical `Bet`: `cascade:77003`, `won`, 2500 cents at `+150`, paying 6250, with its leg on `nba-2026-11-01-phx-at-lal`. The provider's timestamp comes along, plus any optional fields that were absent.
-3. `decide()` compares it with what's stored. It's newer, so it's an **update**. A redelivered copy would be a **duplicate**, and an older version arriving late would be **stale**.
+3. The sync use case runs the domain's `decide()` against what's stored. It's newer, so it's an **update**. A redelivered copy would be a **duplicate**, and an older version arriving late would be **stale**.
 4. In one SQLite transaction: the bet row is updated (version 2), the observation is appended to its history with that outcome, and the cursor moves to 213. If the process dies first, the page is simply fetched again.
 5. `GET /bets/cascade:77003` returns the canonical bet, Cascade's freshness (`ok`, last synced 3s ago), and the history: `inserted` (open), then `updated` (won).
 
-### Storage (`betsync/store.py`)
+### Storage (`betsync/adapters/sqlite_store.py`)
 
 SQLite in WAL mode. The tables:
 - **`bets`:** canonical state.
@@ -141,14 +145,20 @@ Worker logs show one line per cycle, like `cascade: ok pages=1 received=12 inser
 
 ```
 betsync/
-  domain.py          canonical model, team/event identity, the conflict rule
-  providers/         the adapter contract, the HTTP client, one adapter per book
-  sync.py            per-book workers: retries, backoff, cursors, repair
-  store.py           SQLite: canonical state, history, provider state
-  service.py         what the API returns, and the freshness rules
-  api.py             FastAPI routes
-  simulator/         the two simulated books, their seeded world and their faults
-tests/               domain, adapters, sync (in-process), real-HTTP end to end, API
+  domain.py              canonical model, team/event identity, the conflict rule
+  ports.py               the interfaces: Provider, SyncStore/PageWriter, ReadStore, and their errors
+  application/
+    sync.py              the sync use case: per-book workers, retries, backoff, cursors, repair
+    read.py              the read use case: what the API returns, and the freshness rules
+  adapters/
+    providers/           one adapter per book, and the HTTP client
+    sqlite_store.py      SQLite: canonical state, history, provider state
+    api.py               FastAPI routes
+  simulator/             the two simulated books, their seeded world and their faults
+  __main__.py            the composition root: wires adapters to use cases
+tests/                   domain, adapters, sync, real-HTTP end to end, API, methodology rules
+METHODOLOGY.md           the hard rules for every change
+pyproject.toml           lint rules (ruff)
 ```
 
 ## AI & Tools

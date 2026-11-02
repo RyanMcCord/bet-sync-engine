@@ -11,10 +11,9 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from ..domain import TEAMS
-
 
 # --- clocks -------------------------------------------------------------------------
 
@@ -50,6 +49,8 @@ class ScaledClock:
 
 @dataclass(frozen=True)
 class Game:
+    """A simulated game: teams, start and end times, and the final score."""
+
     gid: int
     league: str
     away: str           # canonical team code
@@ -63,6 +64,8 @@ class Game:
 
 @dataclass(frozen=True)
 class LegTruth:
+    """One leg of a simulated bet, with what it really pays once its game ends."""
+
     game: Game
     market: str          # moneyline | spread | total
     selection: str       # team code, "over" or "under"
@@ -94,6 +97,8 @@ class BetVersion:
 
 @dataclass
 class BetTruth:
+    """A simulated bet, and every version it goes through from placed to settled."""
+
     book: str
     number: int                    # the book renders its own ID from this
     placed_at: datetime
@@ -114,6 +119,8 @@ def _american_to_decimal(odds: int) -> float:
 
 
 class World:
+    """The simulated truth that both books report on: games and each book's bets, from one seed."""
+
     BOOKS = ("northstar", "cascade")
 
     def __init__(self, clock, seed: int = 7, games: int = 12, bets_per_book: int = 24):
@@ -136,7 +143,8 @@ class World:
         if league == "NBA":
             away_score, home_score = rng.randint(95, 128), rng.randint(95, 128)
         else:
-            away_score, home_score = rng.choice([10, 13, 17, 20, 23, 24, 27, 31]), rng.choice([10, 14, 17, 20, 21, 24, 28, 30])
+            away_score = rng.choice([10, 13, 17, 20, 23, 24, 27, 31])
+            home_score = rng.choice([10, 14, 17, 20, 21, 24, 28, 30])
         if away_score == home_score:
             home_score += 3
         return Game(gid, league, away, home, starts, starts + length, away_score, home_score,
@@ -170,7 +178,7 @@ class World:
         for leg in legs:
             decimal *= _american_to_decimal(leg.price)
         odds = round((decimal - 1) * 100) if decimal >= 2 else round(-100 / (decimal - 1))
-        first_start = min(l.game.starts_at for l in legs)
+        first_start = min(leg.game.starts_at for leg in legs)
         placed = first_start - timedelta(minutes=rng.randrange(10, 360))
         stake = rng.choice([500, 1000, 1500, 2000, 2500, 5000, 10000])
         bet = BetTruth(book, n, placed, stake, odds, legs)
@@ -182,7 +190,7 @@ class World:
         rng = self.rng
         versions = [BetVersion(bet.placed_at, "open", None, None)]
         delay = timedelta(minutes=rng.randrange(2, 12) if bet.book == "northstar" else rng.randrange(5, 35))
-        postponed = [l for l in bet.legs if l.game.postponed]
+        postponed = [leg for leg in bet.legs if leg.game.postponed]
         if postponed:
             at = postponed[0].game.starts_at + timedelta(minutes=30)
             versions.append(BetVersion(at, "void", bet.stake_cents, at))
@@ -192,8 +200,8 @@ class World:
             at = game.starts_at + (game.ends_at - game.starts_at) / 2
             versions.append(BetVersion(at, "cashed_out", int(bet.stake_cents * rng.uniform(0.3, 1.4)), at))
             return versions
-        results = [l.result() for l in bet.legs]
-        at = max(l.game.ends_at for l in bet.legs) + delay
+        results = [leg.result() for leg in bet.legs]
+        at = max(leg.game.ends_at for leg in bet.legs) + delay
         if "loss" in results:
             versions.append(BetVersion(at, "lost", 0, at))
         elif all(r == "push" for r in results):
@@ -201,7 +209,7 @@ class World:
         else:
             # pushed legs drop out of a parlay; the winning legs are priced on their own
             factor = 1.0
-            for leg, r in zip(bet.legs, results):
+            for leg, r in zip(bet.legs, results, strict=True):
                 if r == "win":
                     factor *= _american_to_decimal(leg.price)
             versions.append(BetVersion(at, "won", round(bet.stake_cents * factor), at))

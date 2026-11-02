@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass, replace
 
 @dataclass
 class FaultProfile:
+    """How badly one simulated book misbehaves. Every rate is a probability per request."""
+
     error_rate: float = 0.0          # chance a request fails with a 500/503
     timeout_rate: float = 0.0        # chance a request hangs longer than any sensible client timeout
     latency_ms: tuple[int, int] = (0, 0)   # extra delay on every request, min..max

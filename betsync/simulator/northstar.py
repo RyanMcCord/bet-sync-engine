@@ -8,7 +8,7 @@
 - Its trouble: duplicates (records repeated across pages) and a lagging read replica that
   sometimes serves an out-of-date version of a bet.
 """
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .faults import Faults, Response
 
@@ -19,7 +19,7 @@ MARKET = {"moneyline": "MONEYLINE", "spread": "SPREAD", "total": "TOTAL"}
 
 def _iso(dt):
     """Format a datetime as Northstar does: ISO 8601 in UTC with a Z."""
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _dollars(cents):
@@ -55,6 +55,8 @@ def render(bet, version):
 
 
 class Northstar:
+    """Simulated Northstar: paged current state, with duplicates and a lagging replica."""
+
     name = "northstar"
 
     def __init__(self, world, faults: Faults):
@@ -76,7 +78,8 @@ class Northstar:
         except ValueError:
             return Response(400, {"error": "bad parameters"}, {})
 
-        rows = sorted((v.at, bet.number, render(bet, v)) for bet, v in self.world.current_bets(self.name) if v.at >= since)
+        rows = sorted((v.at, bet.number, render(bet, v))
+                      for bet, v in self.world.current_bets(self.name) if v.at >= since)
         page = [r[2] for r in rows[offset:offset + limit]]
 
         if page and self.faults.chance(self.faults.profile.stale_rate):

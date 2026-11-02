@@ -1,7 +1,7 @@
 """The canonical model: what a bet is in *our* system, regardless of which sportsbook reported it.
 
 This module is the boundary where provider data stops being provider data. Adapters
-(betsync/providers) translate each sportsbook's schema into these types; nothing past
+(betsync/adapters/providers) translate each sportsbook's schema into these types; nothing past
 that point knows a provider's field names, status codes, odds format or ID scheme.
 
 No I/O here. Everything is plain data and pure functions, so it's tested on its own.
@@ -18,6 +18,8 @@ from zoneinfo import ZoneInfo
 
 
 class BetStatus(str, Enum):
+    """Where a bet stands. Every provider's status codes map onto these."""
+
     OPEN = "open"
     WON = "won"
     LOST = "lost"
@@ -32,6 +34,8 @@ class BetStatus(str, Enum):
 
 
 class Market(str, Enum):
+    """What a leg is a bet on."""
+
     MONEYLINE = "moneyline"
     SPREAD = "spread"
     TOTAL = "total"
@@ -49,7 +53,8 @@ TEAMS = {
     },
     "NFL": {
         "BUF": "Buffalo Bills", "DAL": "Dallas Cowboys", "DET": "Detroit Lions", "GB": "Green Bay Packers",
-        "KC": "Kansas City Chiefs", "LV": "Las Vegas Raiders", "PHI": "Philadelphia Eagles", "SF": "San Francisco 49ers",
+        "KC": "Kansas City Chiefs", "LV": "Las Vegas Raiders", "PHI": "Philadelphia Eagles",
+        "SF": "San Francisco 49ers",
     },
 }
 _EASTERN = ZoneInfo("America/New_York")
@@ -76,6 +81,8 @@ def event_id(league: str, away: str, home: str, starts_at: datetime) -> str:
 
 @dataclass(frozen=True)
 class Event:
+    """A canonical game. Every book's description of the same real game resolves to one Event."""
+
     id: str
     league: str
     away: str            # canonical team code
@@ -102,6 +109,8 @@ class Event:
 
 @dataclass(frozen=True)
 class Leg:
+    """One selection within a bet, on one canonical game."""
+
     event_id: str
     market: Market
     selection: str           # team code, "over" or "under"
@@ -166,6 +175,8 @@ class Observation:
 # --- the conflict rule --------------------------------------------------------------
 
 class Outcome(str, Enum):
+    """What the conflict rule decided about one observation."""
+
     INSERTED = "inserted"      # first time we've seen this bet
     UPDATED = "updated"        # newer information replaced the current state
     DUPLICATE = "duplicate"    # same information we already have: no change
@@ -181,6 +192,8 @@ class Current:
 
 @dataclass(frozen=True)
 class Decision:
+    """The conflict rule's answer: the outcome, the bet to store, and any fields carried over."""
+
     outcome: Outcome
     bet: Bet | None                  # the bet to store (None when nothing changes)
     carried_over: tuple[str, ...] = ()   # optional fields kept from the previous version

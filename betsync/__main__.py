@@ -1,16 +1,20 @@
-"""python -m betsync: start the simulated sportsbooks, the sync engine and the API, in one process."""
+"""python -m betsync: start the simulated sportsbooks, the sync engine and the API, in one process.
+
+This is the composition root: the only place that picks the adapters and wires them to the use cases.
+"""
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from . import config, providers
-from .api import create_app
-from .service import FreshnessPolicy, ReadService
+from . import config
+from .adapters import providers
+from .adapters.api import create_app
+from .adapters.sqlite_store import Store
+from .application.read import FreshnessPolicy, ReadService
+from .application.sync import SyncEngine, SyncPolicy
 from .simulator import ScaledClock, Simulator
 from .simulator.http import create_app as create_upstream_app
-from .store import Store
-from .sync import SyncEngine, SyncPolicy
 
 
 def main(argv=None):
@@ -24,7 +28,7 @@ def main(argv=None):
                 os.remove(cfg.db_path + suffix)
 
     # The simulated sportsbooks. Simulated time starts now and runs `speed` times faster.
-    sim = Simulator(ScaledClock(datetime.now(timezone.utc), cfg.speed), scenario=cfg.scenario, seed=cfg.seed)
+    sim = Simulator(ScaledClock(datetime.now(UTC), cfg.speed), scenario=cfg.scenario, seed=cfg.seed)
 
     store = Store(cfg.db_path)
     adapters = providers.build(f"http://127.0.0.1:{cfg.port}/upstream", cfg.request_timeout)

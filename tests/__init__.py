@@ -1,3 +1,1 @@
-import logging
-
-logging.getLogger("betsync").setLevel(logging.CRITICAL)   # the tests check outcomes, not log lines
+"""Tests: domain, adapters, sync use case, real-HTTP end to end, API, and the methodology rules."""

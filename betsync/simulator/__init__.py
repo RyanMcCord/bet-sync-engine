@@ -2,13 +2,15 @@
 each with its own schema and its own ways of misbehaving. Self-contained: no network, no
 credentials. They run as HTTP servers so the sync engine meets real timeouts and status codes.
 """
-from .faults import SCENARIOS, Faults, FaultProfile, Response
-from .world import ManualClock, ScaledClock, World
-from .northstar import Northstar
 from .cascade import Cascade
+from .faults import SCENARIOS, FaultProfile, Faults, Response
+from .northstar import Northstar
+from .world import ManualClock, ScaledClock, World
 
 
 class Simulator:
+    """Both simulated sportsbooks, reporting on one shared, seeded world."""
+
     def __init__(self, clock, scenario="realistic", seed=7):
         """Build the seeded world and both books, each with its own copy of the scenario's fault
         settings. Raises ValueError for an unknown scenario.

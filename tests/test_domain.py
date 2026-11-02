@@ -1,11 +1,23 @@
 """The canonical model and the conflict rule: pure logic, no I/O."""
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from betsync.domain import (Bet, BetStatus, Current, Event, Leg, Market, Observation, Outcome, decide,
-                            decimal_to_american, parse_american, team_code)
+from betsync.domain import (
+    Bet,
+    BetStatus,
+    Current,
+    Event,
+    Leg,
+    Market,
+    Observation,
+    Outcome,
+    decide,
+    decimal_to_american,
+    parse_american,
+    team_code,
+)
 
-T = datetime(2026, 11, 1, 19, 0, tzinfo=timezone.utc)
+T = datetime(2026, 11, 1, 19, 0, tzinfo=UTC)
 LEG = (Leg("nba-2026-11-01-phx-at-lal", Market.MONEYLINE, "LAL"),)
 
 
@@ -17,6 +29,8 @@ def bet(status=BetStatus.OPEN, **kw):
 
 
 class ConflictRuleTests(unittest.TestCase):
+    """The conflict rule: which observation wins, and what's a duplicate."""
+
     def test_first_sighting_is_inserted(self):
         """A bet we've never seen is inserted."""
         self.assertEqual(decide(None, Observation(bet(), T)).outcome, Outcome.INSERTED)
@@ -65,6 +79,8 @@ class ConflictRuleTests(unittest.TestCase):
 
 
 class IdentityTests(unittest.TestCase):
+    """Canonical identity for teams, games and bets."""
+
     def test_codes_and_names_resolve_to_one_team(self):
         """Team codes and full names resolve to one code; unknown teams get a stable slug."""
         self.assertEqual(team_code("NBA", "Los Angeles Lakers"), ("LAL", True))
@@ -80,7 +96,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_game_date_is_local_not_utc(self):
         """A late game is dated by its local (Eastern) day, not its UTC day."""
-        late_tipoff = datetime(2026, 11, 2, 2, 30, tzinfo=timezone.utc)   # 9:30 PM Eastern on Nov 1
+        late_tipoff = datetime(2026, 11, 2, 2, 30, tzinfo=UTC)   # 9:30 PM Eastern on Nov 1
         self.assertIn("2026-11-01", Event.from_teams("NBA", "PHX", "LAL", late_tipoff).id)
 
     def test_bet_ids_are_namespaced_by_sportsbook(self):
@@ -89,6 +105,8 @@ class IdentityTests(unittest.TestCase):
 
 
 class OddsTests(unittest.TestCase):
+    """Converting between the books' odds formats."""
+
     def test_conversions(self):
         """Decimal and American odds convert correctly, and invalid American odds are rejected."""
         self.assertEqual(decimal_to_american(2.5), 150)

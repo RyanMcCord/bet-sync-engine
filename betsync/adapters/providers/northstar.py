@@ -7,10 +7,10 @@ Cursor: "<updated_since>|<page_token>|<high_water_mark>".
   timestamp, so we deliberately re-read a little; the duplicates that causes are harmless
   because writes are idempotent.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from ..domain import Bet, BetStatus, Event, Leg, Market, Observation, parse_american, team_code
-from .base import Page, PermanentError, Provider, RecordError
+from ...domain import Bet, BetStatus, Event, Leg, Market, Observation, parse_american, team_code
+from ...ports import Page, PermanentError, Provider, RecordError
 
 STATUS = {"PENDING": BetStatus.OPEN, "SETTLED_WIN": BetStatus.WON, "SETTLED_LOSS": BetStatus.LOST,
           "SETTLED_PUSH": BetStatus.PUSH, "VOIDED": BetStatus.VOID, "CASHED_OUT": BetStatus.CASHED_OUT}
@@ -22,12 +22,12 @@ PAGE_SIZE = 50
 
 def _ts(value):
     """Parse a Northstar ISO 8601 timestamp into a UTC datetime."""
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
 
 
 def _iso(dt):
     """Format a datetime the way Northstar expects it in a query: ISO 8601 in UTC with a Z."""
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _cents(amount):
@@ -36,11 +36,13 @@ def _cents(amount):
 
 
 class NorthstarProvider(Provider):
+    """The Provider port for Northstar: current state of each bet, paged by lastModified."""
+
     name = "northstar"
 
     def __init__(self, get_json):
-        """get_json is (path, params) -> dict, raising the errors in base.py."""
-        self.get_json = get_json   # (path, params) -> dict, raising the errors in base.py
+        """get_json is (path, params) -> dict, raising the errors in betsync/ports.py."""
+        self.get_json = get_json   # (path, params) -> dict, raising the errors in betsync/ports.py
 
     def fetch(self, cursor):
         """Get the next page of bets. The cursor is 'since|page_token|newest_seen': follow page tokens

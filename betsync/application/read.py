@@ -15,25 +15,29 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from .store import Store, parse
+from ..ports import ReadStore
 
 SEVERITY = {"ok": 0, "degraded": 1, "stale": 2, "never_synced": 3}
 
 
 @dataclass
 class FreshnessPolicy:
+    """How long since a book's last successful sync before its data counts as stale."""
+
     stale_after: float = 30.0   # seconds since the last successful sync before data counts as stale
 
 
 def utcnow():
     """The current time in UTC (the default clock; tests pass their own)."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class ReadService:
-    def __init__(self, store: Store, providers: list[str], policy: FreshnessPolicy | None = None, now=utcnow):
+    """The read use case: canonical state for the API, with freshness attached to every answer."""
+
+    def __init__(self, store: ReadStore, providers: list[str], policy: FreshnessPolicy | None = None, now=utcnow):
         """store holds the data; providers lists the books to report on; policy sets the freshness window."""
         self.store, self.providers = store, providers
         self.policy = policy or FreshnessPolicy()

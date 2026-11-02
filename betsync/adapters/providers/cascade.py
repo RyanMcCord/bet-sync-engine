@@ -3,10 +3,10 @@
 Cursor: the last sequence number stored. The feed delivers at least once, so changes we've
 already had can come again; writes are idempotent, so that's harmless.
 """
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from ..domain import Bet, BetStatus, Event, Leg, Market, Observation, decimal_to_american
-from .base import Page, PermanentError, Provider, RecordError
+from ...domain import Bet, BetStatus, Event, Leg, Market, Observation, decimal_to_american
+from ...ports import Page, PermanentError, Provider, RecordError
 
 STATE = {"O": BetStatus.OPEN, "W": BetStatus.WON, "L": BetStatus.LOST, "P": BetStatus.PUSH,
          "V": BetStatus.VOID, "C": BetStatus.CASHED_OUT}
@@ -17,14 +17,16 @@ PAGE_SIZE = 50
 
 def _ts(epoch):
     """Cascade timestamps are epoch seconds; turn one into a UTC datetime."""
-    return datetime.fromtimestamp(int(epoch), tz=timezone.utc)
+    return datetime.fromtimestamp(int(epoch), tz=UTC)
 
 
 class CascadeProvider(Provider):
+    """The Provider port for Cascade Bet: a change feed by sequence number, plus single-ticket lookups."""
+
     name = "cascade"
 
     def __init__(self, get_json):
-        """get_json is (path, params) -> dict, raising the errors in base.py."""
+        """get_json is (path, params) -> dict, raising the errors in betsync/ports.py."""
         self.get_json = get_json
 
     def fetch(self, cursor):

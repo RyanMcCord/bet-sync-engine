@@ -6,6 +6,20 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  # The hard rules in METHODOLOGY.md: lint and docstrings (ruff, configured in pyproject.toml).
+  # The layer and docstring tests in tests/test_methodology.py run with the other tests below.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check --output-format github .
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
