@@ -6,36 +6,88 @@ Both sportsbooks are simulated inside the repo, so there are no credentials, acc
 
 ## Run it
 
-Python 3.11 or newer.
+You need Python 3.11 or newer, and Git. It runs on Linux, macOS and Windows; CI tests Linux and Windows on every push.
+
+### Linux and macOS (Terminal)
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+git clone https://github.com/RyanMcCord/bet-sync-engine.git
+cd bet-sync-engine
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 python -m betsync --fresh
 ```
 
-This starts one process with three parts: the two simulated sportsbooks, a sync worker per book, and the API on <http://127.0.0.1:8000>. Interactive API docs are at <http://127.0.0.1:8000/docs>. Simulated time runs 60× faster than real time (`--speed`), so games finish and bets settle within a few minutes. The default fault scenario is `realistic`; use `--scenario calm` for well-behaved books or `--scenario chaos` for heavy weather. `python -m betsync --help` lists every setting.
+### Windows (Command Prompt)
 
-Tests: `python -m unittest` (about 50 tests, a few seconds). Lint: `pip install -r requirements-dev.txt && ruff check .`
+```bat
+git clone https://github.com/RyanMcCord/bet-sync-engine.git
+cd bet-sync-engine
+py -m venv .venv
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+python -m betsync --fresh
+```
 
-Every change follows the hard rules in [METHODOLOGY.md](METHODOLOGY.md): hexagonal layers, docstrings on everything, and the lint rules in `pyproject.toml`. CI enforces all three.
+If `py` isn't recognised, use `python -m venv .venv`. If neither works, install Python from python.org and tick "Add python.exe to PATH". Use Command Prompt rather than PowerShell for the commands below: in Windows PowerShell, `curl` is a different command.
+
+### What you get
+
+This starts one process with three parts: the two simulated sportsbooks, a sync worker per book, and the API on <http://127.0.0.1:8000>. Interactive API docs are at <http://127.0.0.1:8000/docs>. Leave it running and use a second terminal for the calls below; Ctrl+C stops it.
+
+Simulated time runs 60× faster than real time (`--speed`), so games finish and bets settle within a few minutes. That's also why bet times in the API can look ahead of your clock. The default fault scenario is `realistic`; use `--scenario calm` for well-behaved books or `--scenario chaos` for heavy weather. `python -m betsync --help` lists every setting.
 
 ### Try it
 
+Open a second terminal in the same folder. The examples use `curl`, which is built into macOS, most Linux distributions, and Windows 10 and 11.
+
+**Linux and macOS:**
+
 ```bash
-curl -s localhost:8000/status | python -m json.tool               # is sync healthy, degraded or stale?
-curl -s 'localhost:8000/bets?status=won' | python -m json.tool     # canonical bets, with freshness
-curl -s 'localhost:8000/bets?sportsbook=cascade&limit=5' | python -m json.tool
-curl -s localhost:8000/bets/cascade:77003 | python -m json.tool    # one bet and every observation behind it
-curl -s localhost:8000/events | python -m json.tool               # games, with each book's own ID for them
+curl -s localhost:8000/status | python3 -m json.tool               # is sync healthy, degraded or stale?
+curl -s 'localhost:8000/bets?status=won' | python3 -m json.tool     # canonical bets, with freshness
+curl -s 'localhost:8000/bets?sportsbook=cascade&limit=5' | python3 -m json.tool
+curl -s localhost:8000/bets/cascade:77003 | python3 -m json.tool    # one bet and every observation behind it
+curl -s localhost:8000/events | python3 -m json.tool               # games, with each book's own ID for them
 
 # Take Cascade down and watch its freshness degrade while Northstar carries on:
 curl -s -X POST localhost:8000/upstream/cascade/_control -H 'content-type: application/json' -d '{"outage": true}'
-sleep 40; curl -s localhost:8000/status | python -m json.tool      # cascade: "stale", overall: "stale"
-curl -s 'localhost:8000/bets?sportsbook=cascade&limit=1' | python -m json.tool   # still served, marked stale
+sleep 40; curl -s localhost:8000/status | python3 -m json.tool      # cascade: "stale", overall: "stale"
+curl -s 'localhost:8000/bets?sportsbook=cascade&limit=1' | python3 -m json.tool   # still served, marked stale
 curl -s -X POST localhost:8000/upstream/cascade/_control -H 'content-type: application/json' -d '{"outage": false}'
-curl -s -X POST 'localhost:8000/sync?provider=cascade'            # don't wait for the backoff
+curl -s -X POST 'localhost:8000/sync?provider=cascade'             # don't wait for the backoff
 ```
+
+**Windows (Command Prompt):** the same calls, with double quotes instead of single, `\"` inside JSON, and `timeout` instead of `sleep`.
+
+```bat
+curl -s localhost:8000/status | python -m json.tool
+curl -s "localhost:8000/bets?status=won" | python -m json.tool
+curl -s "localhost:8000/bets?sportsbook=cascade&limit=5" | python -m json.tool
+curl -s localhost:8000/bets/cascade:77003 | python -m json.tool
+curl -s localhost:8000/events | python -m json.tool
+
+rem Take Cascade down and watch its freshness degrade while Northstar carries on:
+curl -s -X POST localhost:8000/upstream/cascade/_control -H "content-type: application/json" -d "{\"outage\": true}"
+timeout /t 40
+curl -s localhost:8000/status | python -m json.tool
+curl -s "localhost:8000/bets?sportsbook=cascade&limit=1" | python -m json.tool
+curl -s -X POST localhost:8000/upstream/cascade/_control -H "content-type: application/json" -d "{\"outage\": false}"
+curl -s -X POST "localhost:8000/sync?provider=cascade"
+```
+
+### Tests and lint
+
+The same commands on every platform, with the virtual environment active. About 50 tests, a few seconds.
+
+```bash
+pip install -r requirements-dev.txt
+python -m unittest
+ruff check .
+```
+
+Every change follows the hard rules in [METHODOLOGY.md](METHODOLOGY.md): hexagonal layers, docstrings on everything, and the lint rules in `pyproject.toml`. CI enforces all three.
 
 The `_control` endpoint accepts any fault setting, for example `{"error_rate": 0.5}`, `{"timeout_rate": 1}` or `{"rate_limit_per_sec": 1}`.
 
