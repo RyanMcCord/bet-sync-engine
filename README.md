@@ -55,20 +55,108 @@ The `_control` endpoint accepts any fault setting, for example `{"error_rate": 0
 
 The simulation is seeded (`--seed`). The same seed gives the same games, bets and failures every time. It lives in `betsync/simulator/`, kept separate from the service's own code.
 
-## How it works
+## Design overview
 
+The service is built as **ports and adapters** (hexagonal architecture). The business rules sit in the core and know nothing about HTTP, SQLite or any sportsbook's format. Everything that touches the outside world is an adapter that plugs into a port.
+
+```mermaid
+flowchart LR
+    CL["API clients"]
+
+    subgraph driving["Driving adapter"]
+        API["FastAPI routes<br/>adapters/api.py"]
+    end
+
+    subgraph core["Core: standard library only"]
+        direction LR
+        subgraph app["Application · application/"]
+            READ["Read use case<br/>read.py · freshness rules"]
+            SYNC["Sync use case<br/>sync.py · one worker per book<br/>retries · backoff · cursors"]
+        end
+        DOM["Domain · domain.py<br/>canonical model<br/>conflict rule decide()"]
+        subgraph ports["Ports · ports.py"]
+            RP{{"ReadStore"}}
+            SP{{"SyncStore + PageWriter"}}
+            PP{{"Provider"}}
+        end
+    end
+
+    subgraph driven["Driven adapters"]
+        DB[("SQLite<br/>adapters/sqlite_store.py")]
+        NSP["NorthstarProvider"]
+        CSP["CascadeProvider"]
+    end
+
+    subgraph books["Simulated sportsbooks · simulator/"]
+        NS["Northstar"]
+        CS["Cascade"]
+    end
+
+    CL -- HTTP --> API --> READ
+    READ --> RP
+    SYNC --> SP
+    SYNC --> PP
+    SYNC -- runs --> DOM
+    READ -. uses types .-> DOM
+    RP -. implemented by .-> DB
+    SP -. implemented by .-> DB
+    PP -. implemented by .-> NSP & CSP
+    NSP -- HTTP --> NS
+    CSP -- HTTP --> CS
 ```
- simulated books        adapters/providers            application/sync.py                     adapters/api.py
- (betsync/simulator)    (Provider port)               (use case; SyncStore port)              (calls application/read.py)
 
- Northstar ──HTTP──▶ NorthstarProvider ─┐   fetch page → translate → decide → store + cursor   /bets
-                                         ├─▶ (one worker per book, own retries and health)  ─▶ /bets/{id}
- Cascade   ──HTTP──▶ CascadeProvider  ──┘                     │                                /events
-                                                              ▼                                /status
-                                       adapters/sqlite_store.py: canonical state + history
+- **Domain** (`domain.py`) is where provider data becomes ours: the canonical bet, leg and event, and the conflict rule `decide()`.
+- **Ports** (`ports.py`) say what the use cases need from the outside world: a `Provider` to fetch and translate a book's records, a `SyncStore` to write each page in one transaction, and a `ReadStore` to answer queries.
+- **Application** (`application/`) holds the two use cases. **Sync** runs one worker per book: it fetches, translates, runs the conflict rule and stores, with its own retries, cursor and health. **Read** answers the API and attaches freshness to every answer.
+- **Adapters** (`adapters/`) implement the ports: one per sportsbook, SQLite for storage, and FastAPI for the HTTP API.
+- **The simulator** stands in for the real sportsbooks, so it sits outside the service entirely and is reached only over HTTP.
+- **`__main__.py`** is the composition root: the only place that picks the adapters and wires them to the use cases.
+
+Dependencies only point inwards, and the core uses nothing but the standard library. The test suite checks this on every change: see [METHODOLOGY.md](METHODOLOGY.md). In practice it means adding a third sportsbook is one new adapter file, and moving to Postgres is one new storage adapter. The use cases don't change in either case.
+
+### One sync cycle
+
+Each book's worker repeats this every few seconds, independently of the other book:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as Sync worker<br/>(application/sync.py)
+    participant P as Provider adapter
+    participant B as Sportsbook
+    participant D as domain.decide()
+    participant S as Store (one transaction)
+
+    W->>S: read cursor
+    loop each page, until no more (max 20)
+        W->>P: fetch(cursor)
+        P->>B: GET page
+        alt 5xx or timeout
+            B-->>P: error
+            P-->>W: TransientError
+            Note over W: wait with backoff + jitter, retry (up to 4 tries)
+        else 429
+            B-->>P: Retry-After
+            P-->>W: RateLimited
+            Note over W: wait as told (max 30s), retry
+        end
+        B-->>P: raw records
+        P-->>W: Page
+        W->>P: to_observation(raw), per record
+        Note over W,P: unreadable record → set aside as rejected
+        W->>S: begin page
+        loop each observation
+            W->>S: current version of the bet
+            W->>D: stored vs incoming
+            D-->>W: inserted / updated / duplicate / stale
+            W->>S: write it, and append to history
+        end
+        W->>S: move cursor, commit
+    end
+    W->>S: record cycle and health (ok, or failure + next attempt)
 ```
 
-The code is laid out as ports and adapters (hexagonal). `domain.py` holds the model and the conflict rule; `ports.py` defines what the use cases need from the outside world; `application/` holds the use cases; `adapters/` implements the ports. Dependencies only point inwards, and a test fails CI if they don't. [METHODOLOGY.md](METHODOLOGY.md) has the rules.
+If a page fails after its retries run out, the pages before it stay committed and the next cycle resumes from the last saved cursor. After a successful cycle, the worker also re-fetches any bets still missing a field (see [Missing fields](#failure-duplicates-ordering-and-freshness)).
 
 ### Provider adapters (`betsync/adapters/providers/`, the `Provider` port in `betsync/ports.py`)
 
@@ -163,4 +251,19 @@ pyproject.toml           lint rules (ruff)
 
 ## AI & Tools
 
-> **TODO (Ryan): write this section yourself.** Pikkit asks which tools you used and for one place where you *materially changed, rejected or reworked* their output. It should be true and in your own words. Delete this note when done.
+**Tools.** I built this with Claude Code. It generated most of the code: the adapters, the sync engine, the simulator and its faults, the tests, the CI workflow and drafts of this README. GitHub Actions runs the checks on every push.
+
+**What I decided.** The calls that shape the system were mine: the domain (sportsbook bet history), the stack (Python, FastAPI and SQLite), and the conflict rule (the newest provider timestamp wins). I also kept the providers simulated rather than pointing at real sportsbooks. The brief rules out credentials and hosted services, and only a simulator lets a reviewer trigger an outage on demand.
+
+**Where I reworked the output.** The first version Claude Code produced worked, and its tests passed, but it was only partly hexagonal. The read service imported the SQLite store directly, and the conflict rule ran inside the storage code, so the database layer was making business decisions. I had it restructured into explicit layers: domain, ports, application and adapters. The use case now runs `decide()`, and storage only writes what it's told. The first version also had docstrings on only a handful of functions, so I made them a requirement everywhere.
+
+**How I keep it that way.** Fixing the code once wasn't enough. Without rules, the next generated change could drift right back. So I wrote [METHODOLOGY.md](METHODOLOGY.md): hard rules for every change, whoever or whatever writes it. Each rule is enforced automatically, so it can't be skipped:
+
+| Rule | Enforced by |
+|---|---|
+| Hexagonal layers: dependencies point inwards, adapters don't import each other, only the application runs the conflict rule | `tests/test_methodology.py` |
+| A docstring on every module, class and function, private and nested ones included | `tests/test_methodology.py` and ruff |
+| Lint rules | ruff, configured in `pyproject.toml` |
+| Tests pass, and new behaviour comes with a test | CI |
+
+To check the enforcement itself, I planted deliberate violations (an inner layer importing an adapter, a third-party import in the domain, an adapter importing another adapter, storage calling `decide()`, a missing docstring) and confirmed the tests caught every one. Every new change, mine or AI-generated, has to meet the definition of done in METHODOLOGY.md before it's merged. AI writes code faster than I could alone, while the rules, the tests and my review decide what's accepted.
