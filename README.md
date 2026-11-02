@@ -267,3 +267,22 @@ pyproject.toml           lint rules (ruff)
 | Tests pass, and new behaviour comes with a test | CI |
 
 To check the enforcement itself, I planted deliberate violations (an inner layer importing an adapter, a third-party import in the domain, an adapter importing another adapter, storage calling `decide()`, a missing docstring) and confirmed the tests caught every one. Every new change, mine or AI-generated, has to meet the definition of done in METHODOLOGY.md before it's merged. AI writes code faster than I could alone, while the rules, the tests and my review decide what's accepted.
+
+### Decision log
+
+The decisions I made while directing Claude Code, in order. New rows go at the bottom as decisions are made.
+
+| Date | Decision | Why, and what changed |
+|---|---|---|
+| 2026-10-29 | Built this as a new repo instead of adapting an existing project of mine | My X-bot repo (`sharps_leaderboard`) didn't meet the brief: it has no multiple providers with different schemas, no simulated failures and no freshness. Bending it to fit would have muddied both |
+| 2026-10-29 | Domain: a bettor's bet history across sportsbooks | Two books describing the same bets and games in different formats gives real normalisation work (odds, money, IDs, team names) and realistic failure modes |
+| 2026-10-29 | Stack: Python, FastAPI and SQLite | Small, runnable with one command, nothing to install beyond pip. The brief says SQLite is reasonable |
+| 2026-10-29 | Conflict rule: the newest provider timestamp wins | Simple to explain and test. Late or replayed old versions can never overwrite newer state, so a settled bet can't be reopened |
+| 2026-10-29 | Kept the service local, with no hosted deployment | The brief says a live deployment isn't required. GitHub Pages can't run the backend, and a free host adds something that can break before review |
+| 2026-10-29 | Kept the sportsbooks simulated rather than scraping or calling real sources | I questioned this, then checked the brief: it forbids credentials and hosted mocks, and asks for a self-contained simulation. Real bet history also sits behind a login. The simulator lets a reviewer trigger failures on demand |
+| 2026-10-29 | Asked whether the generated design was really hexagonal | It was only partly: the read service imported SQLite directly, and the storage code ran the conflict rule. This led to the restructure below |
+| 2026-10-30 | Required a docstring on every function | Most of the generated functions had none. 188 were added, each checked against the code; two that were first written inaccurately were corrected |
+| 2026-11-01 | Re-checked the repo against the brief, line by line | Everything was covered except this section |
+| 2026-11-01 | Restructured into full hexagonal layers now, rather than applying the rules only to new code | A rule the existing code breaks can't be enforced by tests. The use case now runs `decide()`, storage sits behind ports, and behaviour didn't change: every existing test still passes |
+| 2026-11-01 | Wrote METHODOLOGY.md as hard rules, enforced in CI | Hexagonal layers and docstrings are checked by `tests/test_methodology.py`; lint by ruff via `pyproject.toml`. Planted violations confirmed each check fails when it should |
+| 2026-11-01 | Added a design overview with diagrams to the README | So a reviewer can follow a record from provider to API without a meeting, as the brief asks |
