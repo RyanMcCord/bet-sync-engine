@@ -84,7 +84,8 @@ class Rig:
         return {n: w.run_cycle() for n, w in self.workers.items() if name in (None, n)}
 
     def close(self):
-        """Delete the temporary database files."""
+        """Close the database, then delete its temporary files."""
+        self.store.close()
         try:
             os.remove(self.path)
             for suffix in ("-wal", "-shm"):

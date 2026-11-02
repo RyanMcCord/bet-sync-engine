@@ -63,7 +63,9 @@ class HttpEndToEndTests(unittest.TestCase):
         for book in self.sim.books.values():
             book.faults.update(outage=False, error_rate=0, timeout_rate=0, rate_limit_per_sec=0)
         self.store, path = temp_store()
+        # cleanups run last-in first-out: close the database, then delete its files
         self.addCleanup(lambda: [os.remove(path + s) for s in ("", "-wal", "-shm") if os.path.exists(path + s)])
+        self.addCleanup(self.store.close)
 
     def control(self, book, **changes):
         """Change a book's fault settings through its _control endpoint."""

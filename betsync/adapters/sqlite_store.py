@@ -115,6 +115,7 @@ class Store:
         self.path = path
         self._local = threading.local()
         self._write_lock = threading.Lock()
+        self._opened, self._opened_lock = [], threading.Lock()
         with self._conn() as c:
             c.executescript(SCHEMA)
 
@@ -127,7 +128,17 @@ class Store:
             if self.path != ":memory:":
                 conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn = conn
+            with self._opened_lock:
+                self._opened.append(conn)
         return conn
+
+    def close(self):
+        """Close every thread's connection. Windows won't delete a database file that's still open."""
+        with self._opened_lock:
+            for conn in self._opened:
+                conn.close()
+            self._opened.clear()
+        self._local = threading.local()
 
     @contextmanager
     def transaction(self):
